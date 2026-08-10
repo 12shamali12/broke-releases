@@ -1,0 +1,37 @@
+{
+  "name": "Broke",
+  "identifier": "com.shamali.broke.source",
+  "subtitle": "Shamali's own builds",
+  "description": "Built ipas for Broke — the offline-first personal finance app. Source code is private; only the binary is published here.",
+  "iconURL": "https://raw.githubusercontent.com/12shamali12/broke-releases/main/icon.png",
+  "website": "https://github.com/12shamali12/broke-releases",
+  "tintColor": "#C6FF3D",
+  "apps": [
+    {
+      "name": "Broke",
+      "bundleIdentifier": "com.shamali.broke",
+      "developerName": "Shamali",
+      "subtitle": "Money tracking that works with no internet",
+      "localizedDescription": "Broke keeps every wallet, transaction, goal, debt and bill in a database on this phone. No account, no login, no server — it works in airplane mode. 3ammo still has opinions about your spending.",
+      "iconURL": "https://raw.githubusercontent.com/12shamali12/broke-releases/main/icon.png",
+      "tintColor": "#C6FF3D",
+      "category": "finance",
+      "screenshotURLs": [],
+      "versions": [
+        {
+          "version": "0.1.0",
+          "date": "2026-08-10",
+          "localizedDescription": "Offline-first: the phone is now the source of truth. Local database, no backend, no login. Mutual-debt offsetting, repeating bills, and a from-zero reset.",
+          "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.0/broke.ipa",
+          "size": 9614225,
+          "minOSVersion": "15.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      }
+    }
+  ],
+  "news": []
+}
