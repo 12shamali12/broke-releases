@@ -38,7 +38,12 @@
       "appPermissions": {
         "entitlements": [],
         "privacy": {}
-      }
+      },
+      "version": "0.1.1",
+      "versionDate": "2026-08-10",
+      "versionDescription": "3ammo is now the app icon. First launch asks what to call you.",
+      "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.1/broke.ipa",
+      "size": 10009204
     }
   ],
   "news": []
