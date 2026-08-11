@@ -1,57 +1,44 @@
 {
   "name": "Broke",
   "identifier": "com.shamali.broke.source",
-  "subtitle": "Shamali's own builds",
-  "description": "Built ipas for Broke â€” the offline-first personal finance app. Source code is private; only the binary is published here.",
-  "iconURL": "https://raw.githubusercontent.com/12shamali12/broke-releases/main/icon.png",
-  "website": "https://github.com/12shamali12/broke-releases",
-  "tintColor": "#C6FF3D",
+  "sourceURL": "https://raw.githubusercontent.com/12shamali12/broke-releases/main/apps.json",
   "apps": [
     {
       "name": "Broke",
       "bundleIdentifier": "com.shamali.broke",
       "developerName": "Shamali",
-      "subtitle": "Money tracking that works with no internet",
-      "localizedDescription": "Broke keeps every wallet, transaction, goal, debt and bill in a database on this phone. No account, no login, no server â€” it works in airplane mode. 3ammo still has opinions about your spending.",
+      "version": "0.1.2",
+      "versionDate": "2026-08-11T07:54:43Z",
+      "versionDescription": "Plan is now a month calendar. Swipe between tabs, and swipe any record to edit or delete it. Goals reorder by dragging and can log money you already paid. Bills and salary get mark-paid and skip. Wallet splits what you owe from what you are owed. Plus fixes for every bug you reported.",
+      "size": 10107117,
+      "localizedDescription": "Broke keeps every wallet, transaction, goal, debt and bill in a database on this phone. No account, no login, no server - it works in airplane mode. 3ammo still has opinions about your spending.",
       "iconURL": "https://raw.githubusercontent.com/12shamali12/broke-releases/main/icon.png",
-      "tintColor": "#C6FF3D",
-      "category": "finance",
+      "tintColor": "C6FF3D",
+      "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.2/broke.ipa",
       "screenshotURLs": [],
       "versions": [
         {
           "version": "0.1.2",
-          "date": "2026-08-11",
-          "localizedDescription": "Plan is now a month calendar. Swipe between tabs, swipe any record to edit or delete. Goals reorder by dragging and take an \"I already paid this\". Bills and salary get mark-paid and skip. Wallet splits what you owe from what you are owed. Plus fixes for every bug you reported.",
+          "date": "2026-08-11T07:54:43Z",
+          "localizedDescription": "Plan is now a month calendar. Swipe between tabs, and swipe any record to edit or delete it. Goals reorder by dragging and can log money you already paid. Bills and salary get mark-paid and skip. Wallet splits what you owe from what you are owed. Plus fixes for every bug you reported.",
           "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.2/broke.ipa",
-          "size": 10107117,
-          "minOSVersion": "15.0"
+          "size": 10107117
         },
         {
           "version": "0.1.1",
-          "date": "2026-08-10",
+          "date": "2026-08-10T20:16:44Z",
           "localizedDescription": "3ammo is now the app icon. First launch asks what to call you.",
           "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.1/broke.ipa",
-          "size": 10009204,
-          "minOSVersion": "15.0"
+          "size": 10009204
         },
         {
           "version": "0.1.0",
-          "date": "2026-08-10",
+          "date": "2026-08-10T15:53:36Z",
           "localizedDescription": "Offline-first: the phone is now the source of truth. Local database, no backend, no login. Mutual-debt offsetting, repeating bills, and a from-zero reset.",
           "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.0/broke.ipa",
-          "size": 9614225,
-          "minOSVersion": "15.0"
+          "size": 9614225
         }
-      ],
-      "appPermissions": {
-        "entitlements": [],
-        "privacy": {}
-      },
-      "version": "0.1.2",
-      "versionDate": "2026-08-11",
-      "versionDescription": "Plan is now a month calendar. Swipe between tabs, swipe any record to edit or delete. Goals reorder by dragging and take an \"I already paid this\". Bills and salary get mark-paid and skip. Wallet splits what you owe from what you are owed. Plus fixes for every bug you reported.",
-      "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.2/broke.ipa",
-      "size": 10107117
+      ]
     }
   ],
   "news": []
