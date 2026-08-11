@@ -19,6 +19,14 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "0.1.2",
+          "date": "2026-08-11",
+          "localizedDescription": "Plan is now a month calendar. Swipe between tabs, swipe any record to edit or delete. Goals reorder by dragging and take an \"I already paid this\". Bills and salary get mark-paid and skip. Wallet splits what you owe from what you are owed. Plus fixes for every bug you reported.",
+          "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.2/broke.ipa",
+          "size": 10107117,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "0.1.1",
           "date": "2026-08-10",
           "localizedDescription": "3ammo is now the app icon. First launch asks what to call you.",
@@ -39,11 +47,11 @@
         "entitlements": [],
         "privacy": {}
       },
-      "version": "0.1.1",
-      "versionDate": "2026-08-10",
-      "versionDescription": "3ammo is now the app icon. First launch asks what to call you.",
-      "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.1/broke.ipa",
-      "size": 10009204
+      "version": "0.1.2",
+      "versionDate": "2026-08-11",
+      "versionDescription": "Plan is now a month calendar. Swipe between tabs, swipe any record to edit or delete. Goals reorder by dragging and take an \"I already paid this\". Bills and salary get mark-paid and skip. Wallet splits what you owe from what you are owed. Plus fixes for every bug you reported.",
+      "downloadURL": "https://github.com/12shamali12/broke-releases/releases/download/v0.1.2/broke.ipa",
+      "size": 10107117
     }
   ],
   "news": []
