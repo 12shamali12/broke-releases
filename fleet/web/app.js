@@ -61,6 +61,8 @@ const state = {
   query: '',
   /** Narrows the board to one group. Null means everything. */
   tag: null,
+  /** Unsaved note text, per session, so a re-render cannot eat it. */
+  noteDrafts: {},
   /** Ids already drawn on the board — anything absent gets the entrance. */
   metrics: null,
   notify: null,
@@ -377,6 +379,7 @@ function sessionCard(s) {
     `idle ${ago(s.staleFor)}`,
     s.reachable ? null : 'unreachable',
     s.snoozedUntil ? `alerts muted for ${ago(s.snoozedUntil - Date.now())}` : null,
+    s.note ? `your note: ${s.note}` : null,
   ].filter(Boolean).join(', ');
 
   const entrance = state.seen.has(s.id) ? '' : ' enter';
@@ -400,6 +403,10 @@ function sessionCard(s) {
           h('div', { class: 'label' }, s.staleFor > 86_400_000 ? `Stalled ${ago(s.staleFor)}` : 'Needs you'),
           h('div', { class: 'body' }, need))
       : h('div', { class: 'detail', 'aria-hidden': 'true' }, s.summary?.detail ?? 'No status reported.'),
+
+    s.note
+      ? h('div', { class: 'yournote', 'aria-hidden': 'true' }, s.note.split('\n')[0].slice(0, 90))
+      : null,
 
     s.tags?.length
       ? h('div', { class: 'tags', 'aria-hidden': 'true' },
@@ -567,6 +574,33 @@ function viewSession() {
           h('span', { class: 'k' }, 'Model'), h('span', { class: 'v' }, s.modelId?.replace('claude-', '') ?? '—')),
         h('div', { class: 'listrow', style: 'flex-grow:1;margin:0' },
           h('span', { class: 'k' }, 'Effort'), h('span', { class: 'v' }, s.effort ?? '—'))),
+
+      h('div', { class: 'rule' }, h('span', { class: 't' }, 'Your note'), h('span', { class: 'line' })),
+      (() => {
+        const note = h('textarea', {
+          id: 'note',
+          placeholder: 'Why this exists, what you already tried, what you decided…',
+          'aria-label': `Your note about ${s.title}`,
+          style: 'min-height:64px',
+          oninput: () => { state.noteDrafts[s.id] = note.value; },
+          onblur: async () => {
+            // Saved on blur rather than per keystroke: this is prose, and a
+            // write per character would be a write per character.
+            if (note.value === (s.note ?? '')) return;
+            try {
+              await api(`/v1/fleet/${encodeURIComponent(s.id)}/note`, {
+                method: 'PUT', body: JSON.stringify({ text: note.value }),
+              });
+              delete state.noteDrafts[s.id];
+              await refresh();
+            } catch (err) { toast(err.message); }
+          },
+        });
+        note.value = state.noteDrafts[s.id] ?? s.note ?? '';
+        return h('div', { class: 'field' }, note);
+      })(),
+      h('p', { class: 'detail', style: 'margin-top:6px;font-size:11.5px' },
+        'Only you write this. Everything else on this screen is derived — none of it remembers why you started.'),
 
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Groups'), h('span', { class: 'line' })),
       h('div', { class: 'chips', role: 'group', 'aria-label': 'Groups this session is in' },

@@ -271,7 +271,14 @@ async function served() {
 
   return {
     base, rpc, token,
-    cleanup: async () => { hub.close(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true }); },
+    cleanup: async () => {
+      hub.close();
+      await new Promise((r) => server.close(r));
+      // Every authenticated request fires a device touch that no handler waits
+      // on; removing the directory mid-write is an intermittent ENOTEMPTY.
+      await devices.drain();
+      await rm(dir, { recursive: true, force: true });
+    },
   };
 }
 

@@ -108,12 +108,12 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, notify = null, tags = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
+export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, notify = null, tags = null, notes = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
   const serveCockpit = cockpitRoot ? createStaticHandler({ root: cockpitRoot }) : null;
-  const mcp = createMcpHandler({ poller, queue, snooze, tags, metrics, media });
+  const mcp = createMcpHandler({ poller, queue, snooze, tags, metrics, media, notes });
 
   // Everything the poller emits becomes a log entry, which the hub fans out.
   poller.on('event', (event) => log.append(event));
@@ -126,6 +126,7 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
     // indistinguishable from a bug.
     let decorated = snooze ? snooze.decorate(fleet) : fleet;
     decorated = tags ? tags.decorate(decorated) : decorated;
+    decorated = notes ? notes.decorate(decorated) : decorated;
     return { ...decorated, health: poller.health };
   }
 
@@ -248,6 +249,39 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
       if (method === 'DELETE') {
         return send(res, 200, { woken: await snooze.wake(sessionId) });
       }
+    }
+
+    // --- notes ---
+
+    if (segments[0] === 'v1' && segments[1] === 'fleet' && segments[2] && segments[3] === 'note') {
+      if (!notes) throw new HttpError(503, 'notes are not configured');
+      const sessionId = decodeURIComponent(segments[2]);
+
+      if (method === 'GET') {
+        // Deliberately not requireSession: a note outlives its session for a
+        // week, and the moment it vanished is often when you want to read it.
+        return send(res, 200, { note: notes.get(sessionId) });
+      }
+      if (method === 'PUT' || method === 'POST') {
+        requireSession(sessionId);
+        const body = await readJson(req);
+        try {
+          return send(res, 200, { note: await notes.set(sessionId, body.text ?? '') });
+        } catch (err) {
+          throw new HttpError(400, err.message);
+        }
+      }
+      if (method === 'DELETE') {
+        return send(res, 200, { note: await notes.set(sessionId, '') });
+      }
+    }
+
+    if (path === '/v1/notes/orphans' && method === 'GET') {
+      if (!notes) throw new HttpError(503, 'notes are not configured');
+      return send(res, 200, {
+        orphans: notes.orphans,
+        note: 'these sessions are gone; their notes are kept for a week',
+      });
     }
 
     // --- tags and bulk ---

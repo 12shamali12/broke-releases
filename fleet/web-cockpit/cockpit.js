@@ -35,6 +35,7 @@ const state = {
   metrics: null,            // fetched when the stats sheet opens
   notify: null,             // notification rules, fetched with the stats sheet
   tag: null,                // narrows the rail to one group
+  noteDrafts: {},           // unsaved note text, per session
   bulk: null,               // a pending group action, awaiting confirmation
 };
 
@@ -727,6 +728,7 @@ function railRow(s, index) {
     h('span', { class: `dot ${laneDot(s)}`, 'aria-hidden': 'true' }),
     h('div', { style: 'flex-grow:1;min-width:0' },
       h('div', { class: 'title' }, s.title),
+      s.note ? h('div', { class: 'rownote' }, s.note.split('\n')[0].slice(0, 60)) : null,
       h('div', { class: 'sub' },
         h('div', { class: `meter${pct >= 70 ? ' hot' : ''}` }, h('i', { style: `width:${pct}%` })),
         h('span', { class: 'ctx' }, s.contextMax >= 1e6 ? '1M' : '200K'))),
@@ -870,6 +872,28 @@ function panel(s) {
   const tone = s.lane === 'blocked' ? 'ac' : s.lane === 'ready' ? 'ok' : 'wk';
   const rl = state.fleet?.rateLimit;
 
+  const note = h('textarea', {
+    id: 'note',
+    placeholder: 'Your note — why this exists, what you tried, what you decided…',
+    'aria-label': `Your note about ${s.title}`,
+    style: 'width:100%;min-height:44px;background:none;border:none;outline:none;resize:vertical;font:inherit;color:var(--dm)',
+    oninput: () => { state.noteDrafts[s.id] = note.value; },
+    onblur: async () => {
+      // On blur, not per keystroke: this is prose, and a write per character
+      // would be a write per character.
+      if (note.value === (s.note ?? '')) return;
+      try {
+        await api(`/v1/fleet/${encodeURIComponent(s.id)}/note`, {
+          method: 'PUT', body: JSON.stringify({ text: note.value }),
+        });
+        delete state.noteDrafts[s.id];
+        await refresh();
+        toast('Note saved');
+      } catch (err) { toast(err.message); }
+    },
+  });
+  note.value = state.noteDrafts[s.id] ?? s.note ?? '';
+
   const actions = [
     ['Send message', '⌘⏎', () => document.getElementById('composer')?.focus(), false],
     ['Stop', 'esc', () => dispatch(s.id, 'send', { text: '/stop' }), s.status !== 'running'],
@@ -907,6 +931,11 @@ function panel(s) {
       h('div', { class: 'note' }, rl?.resetsAt ? `resets in ${ago(rl.resetsAt - Date.now())} · shared by every session` : 'no reading yet')),
 
     h('div', { class: 'sect' },
+      h('div', { class: 'h' }, 'Your note'),
+      note,
+      h('div', { class: 'note' }, 'the only thing here you wrote — everything else is derived')),
+
+    h('div', { class: 'sect' },
       h('div', { class: 'h' }, 'Session'),
       [['Repository', s.repo ?? '—'], ['Branch', s.branch ?? '—'], ['Permission', s.permissionMode ?? '—'],
        ['Environment', `${s.envKind ?? '?'} · ${s.connection ?? '?'}`], ['Idle for', ago(s.staleFor)]]
@@ -915,7 +944,11 @@ function panel(s) {
     h('div', { class: 'sect' },
       h('div', { class: 'h' }, 'Actions'),
       actions.map(([label, key, run, off]) =>
-        h('div', { class: `act${off ? ' off' : ''}`, onclick: () => !off && run() },
+        h('div', pressable({
+          class: `act${off ? ' off' : ''}`,
+          'aria-disabled': off ? 'true' : null,
+          tabindex: off ? '-1' : '0',
+        }, () => !off && run()),
           h('span', {}, label), h('span', { class: 'k' }, key)))));
 }
 

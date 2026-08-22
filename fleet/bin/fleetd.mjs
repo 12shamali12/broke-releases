@@ -23,6 +23,7 @@ import { MediaController } from '../src/media.js';
 import { Metrics } from '../src/metrics.js';
 import { NotificationService } from '../src/notify/index.js';
 import { TagStore } from '../src/tags.js';
+import { NoteStore } from '../src/notes.js';
 import { SnoozeStore } from '../src/snooze.js';
 import { createFleetServer } from '../src/http/server.js';
 
@@ -111,9 +112,13 @@ const notify = new NotificationService({ push, queue, snooze, metrics }).attach(
 const tags = await TagStore.open({ path: join(STATE, 'tags.json') });
 // Tags for sessions that no longer exist would otherwise accumulate forever,
 // and worse, could be re-attached to a recycled id.
-poller.on('fleet', (fleet) => { tags.reconcile(fleet).catch(() => {}); });
+const notes = await NoteStore.open({ path: join(STATE, 'notes.json') });
+poller.on('fleet', (fleet) => {
+  tags.reconcile(fleet).catch(() => {});
+  notes.reconcile(fleet).catch(() => {});
+});
 
-const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, metrics, notify, tags, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
+const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, metrics, notify, tags, notes, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
 
 poller.on('event', (e) => {
   if (e.severity !== 'push' || !snooze.allows(e)) return;
@@ -164,6 +169,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     await push.drain();
     // The numbers are only useful if they survive the restart.
     await metrics.persist();
+    await devices.drain();
     // Queued commands stay on disk; they are attempted again on next start.
     await new Promise((r) => server.close(r));
     console.log(`${C.ok}✓${C.off} ${C.dim}${queue.due(Date.now()).length} command(s) still queued for next start${C.off}`);

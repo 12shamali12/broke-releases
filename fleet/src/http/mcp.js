@@ -200,6 +200,17 @@ export const TOOLS = [
     },
   },
   {
+    name: 'fleet_note',
+    description:
+      "Read or write the person's own note on a session — why they started it, what they already tried, what they decided. Everything else about a session is derived from the platform; this is the only field that is theirs. Omit text to read it, pass an empty string to clear it. Never rewrite or summarise an existing note without being asked: it is their words.",
+    inputSchema: {
+      type: 'object',
+      properties: { ...sessionArg, text: { type: 'string', description: 'Omit to read.' } },
+      required: ['sessionId'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'fleet_search',
     description:
       'Search sessions by title, repository, branch and status line. Transcripts are NOT indexed — they live on Anthropic\'s side, so a transcript question cannot be answered from here.',
@@ -246,7 +257,7 @@ class RpcError extends Error {
  * durability, ordering and never-silent guarantees hold identically whether a
  * command came from a phone tap or a Claude conversation.
  */
-export function createMcpHandler({ poller, queue, snooze = null, tags = null, metrics = null, media = null, serverName = 'fleetd' }) {
+export function createMcpHandler({ poller, queue, snooze = null, tags = null, metrics = null, media = null, notes = null, serverName = 'fleetd' }) {
   function fleet() {
     if (!poller.fleet) throw new RpcError(ERR.INTERNAL, 'fleetd has not completed its first poll yet');
     return poller.fleet;
@@ -411,6 +422,18 @@ export function createMcpHandler({ poller, queue, snooze = null, tags = null, me
         throw new RpcError(ERR.INVALID_PARAMS, err.message);
       }
       return media.status();
+    },
+
+    async fleet_note(args) {
+      if (!notes) throw new RpcError(ERR.INTERNAL, 'notes are not configured');
+      const id = need(args, 'sessionId');
+      if (args?.text === undefined) return { note: notes.get(id) };
+      session(id);
+      try {
+        return { note: await notes.set(id, args.text), note_is_theirs: true };
+      } catch (err) {
+        throw new RpcError(ERR.INVALID_PARAMS, err.message);
+      }
     },
 
     async fleet_snooze(args) {

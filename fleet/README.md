@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 273 tests, no network, no CLI, no credentials
+npm test                        # 288 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -56,6 +56,9 @@ GET    /v1/push/key                  the VAPID public key
 POST   /v1/push/subscribe            {endpoint, keys}
 DELETE /v1/push/subscribe            {endpoint}
 POST   /v1/push/test                 a real notification, end to end
+GET    /v1/fleet/:id/note            your own context on a session
+PUT    /v1/fleet/:id/note            {text} — verbatim, never truncated
+GET    /v1/notes/orphans             notes whose session is gone
 GET    /v1/tags                      every group, and how many are in it
 GET    /v1/fleet/:id/tags            one session's groups
 POST   /v1/fleet/:id/tags            {add, remove}
@@ -71,11 +74,11 @@ POST   /v1/media/:verb               play-pause | next | previous | volume-up/do
 
 ## The MCP face
 
-`POST /mcp` speaks JSON-RPC 2.0 with sixteen tools — everything the clients can
+`POST /mcp` speaks JSON-RPC 2.0 with seventeen tools — everything the clients can
 do: `fleet_list`, `fleet_get`, `fleet_send`, `fleet_stop`, `fleet_set_model`,
 `fleet_set_effort`, `fleet_compact`, `fleet_rename`, `fleet_snooze`,
 `fleet_search`, `fleet_groups`, `fleet_tag`, `fleet_bulk_preview`,
-`fleet_bulk`, `fleet_metrics`, `fleet_media`.
+`fleet_bulk`, `fleet_metrics`, `fleet_media`, `fleet_note`.
 
 This is the highest-leverage endpoint in the design. A published artifact page
 cannot call fleetd — a strict CSP blocks it — but it *can* call the viewer's
@@ -152,7 +155,7 @@ src/http/auth.js        per-device tokens, stored hashed
 src/http/events.js      the event log and the SSE hub
 src/http/server.js      routing, validation, auth gate
 src/http/static.js      serves the app; traversal is contained, not guessed at
-src/http/mcp.js         the MCP face: JSON-RPC, sixteen tools, same auth
+src/http/mcp.js         the MCP face: JSON-RPC, seventeen tools, same auth
 src/snooze.js           per-session alert mute, expiring, never hiding
 src/media.js            the transport: playerctl on Linux, AppleScript on macOS
 src/metrics.js          time to acknowledge, in percentiles, including open episodes
@@ -160,6 +163,7 @@ src/notify/policy.js    escalation, coalescing, quiet hours, the hourly ceiling
 src/notify/tokens.js    what a notification is allowed to do, and for how long
 src/notify/index.js     the assembly: policy + tokens + push + queue + snooze
 src/tags.js             grouping, derived and manual, and who a bulk action hits
+src/notes.js            the one field that is yours, kept verbatim
 src/atomic.js           write-then-rename, unique per write, shared by all four stores
 src/push/crypto.js      RFC 8291 + 8188 + 8292, from the specs, no deps
 src/push/index.js       subscriptions, delivery, quiet hours
@@ -237,6 +241,20 @@ It **expires** rather than toggling off — 4 hours by default, 72 at most —
 because an indefinite mute is how a session goes quiet forever. And
 `command.failed` is never suppressed: snooze is a statement about a session's
 own noise, not permission to lose a message you asked to send.
+
+## The one field that is yours
+
+Everything else about a session is derived: the title comes from the platform,
+the status line from the model, the lane from a rule. All of it describes what
+a session *is*. None of it holds why you started it, what you already tried, or
+what you decided at 2am and will not remember tomorrow — and that gap hurts
+most on a session you come back to after four days, which is exactly the
+session this product exists to surface.
+
+A note is stored and returned verbatim, never truncated (too long is refused,
+because silently cutting someone's own words in half is worse than saying it
+did not fit), and it outlives its session by a week — a session disappearing is
+often the moment you most want to read what you wrote about it.
 
 ## Groups, and acting on one
 
@@ -396,3 +414,4 @@ first is a design change; the second is real work. Undecided — see
 - [x] 09 Notifications — escalation, coalescing, lock-screen actions, receipts
 - [x] 10 Groups and bulk — derived tags, previewed group actions
 - [x] 11 MCP parity — every client capability reachable from a conversation
+- [x] 12 Notes, and a flake that was two real shutdown bugs

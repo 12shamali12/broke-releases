@@ -69,6 +69,12 @@ async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = fal
     cleanup: async () => {
       hub.close();
       await new Promise((r) => server.close(r));
+      // Every authenticated request fires a device touch that no handler
+      // waits on. Removing the directory while one is mid-write is an
+      // intermittent ENOTEMPTY that reads as a flaky test and is really a
+      // shutdown with no way to wait.
+      await devices.drain();
+      notify?.stop();
       await rm(dir, { recursive: true, force: true });
     },
   };
@@ -805,5 +811,34 @@ test('the tag index reports what exists to group by', async () => {
     assert.ok(tags.some((t) => t.tag.startsWith('lane:')));
   } finally {
     await h.cleanup();
+  }
+});
+
+test('a device touch can be waited for, so shutdown cannot outrun it', async () => {
+  // The bug this guards showed up as an intermittent ENOTEMPTY in an unrelated
+  // test: a whole-file write landing after the state directory was removed.
+  // The handler cannot await the touch — a timestamp must not sit in front of
+  // a response — so something else has to be able to.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-touch-'));
+  try {
+    let release;
+    const held = new Promise((r) => { release = r; });
+    const devices = await DeviceStore.open({ path: join(dir, 'devices.json'), now: () => Date.now() });
+    const { code } = devices.openPairing();
+    await devices.pair(code, 'phone');
+
+    const device = devices.devices[0];
+    // Far enough in the past that the throttle does not skip the write.
+    device.lastSeenAt = 0;
+
+    const touching = devices.touch(device);
+    assert.ok(devices.pendingWrites >= 0);
+    await touching;
+    await devices.drain();
+    assert.equal(devices.pendingWrites, 0);
+    release();
+    await held.catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

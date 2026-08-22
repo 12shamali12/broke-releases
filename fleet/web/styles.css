@@ -227,6 +227,15 @@ nav svg { width: 19px; height: 19px; }
 }
 #toast.show { opacity: 1; }
 
+/* The only text on a card that a person wrote, so it is set apart rather than
+   styled like the derived status line above it. */
+.yournote {
+  margin-top: 9px; padding-left: 9px;
+  border-left: 2px solid var(--acb);
+  font-size: 12px; line-height: 1.45; color: var(--dm);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* ---- tags ---- */
 .tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 9px 0 0; }
 .tag {

@@ -40,6 +40,8 @@ export class DeviceStore {
   #devices = [];
   #pairing = null;
   #now;
+  /** Writes started by `touch`, which no request handler waits on. */
+  #inFlight = new Set();
 
   constructor({ path, now = () => Date.now() } = {}) {
     this.#path = path;
@@ -131,8 +133,25 @@ export class DeviceStore {
     const previous = device.lastSeenAt ?? 0;
     device.lastSeenAt = now;
     if (now - previous < TOUCH_PERSIST_MS) return false;
-    await this.#persist();
+
+    // Tracked so `drain()` can wait for it. The request handler cannot await
+    // this — a device timestamp must not sit in front of a response — but
+    // something has to, or a write lands after shutdown has begun and the
+    // state directory is gone underneath it. That is the same fire-and-forget
+    // shape that made the push tests flake, in a different file.
+    const write = this.#persist().finally(() => this.#inFlight.delete(write));
+    this.#inFlight.add(write);
+    await write;
     return true;
+  }
+
+  /** Resolves once every deferred write has settled. */
+  async drain() {
+    while (this.#inFlight.size) await Promise.allSettled([...this.#inFlight]);
+  }
+
+  get pendingWrites() {
+    return this.#inFlight.size;
   }
 
   async revoke(id) {

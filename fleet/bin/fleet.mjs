@@ -142,6 +142,11 @@ function printBoard(fleet, { lane = null } = {}) {
     if (s.summary?.needsAction) {
       console.log(`    ${C.ac}→ ${s.summary.needsAction}${C.off}`);
     }
+    if (s.note) {
+      // Set apart from the derived status line above it: this is the one line
+      // on the board a person wrote themselves.
+      console.log(`    ${C.dim}▏${s.note.split('\n')[0].slice(0, 66)}${C.off}`);
+    }
   }
   console.log('');
 }
@@ -300,6 +305,30 @@ switch (command) {
       `${d.commandsFailed ? C.ac : C.ok}${d.commandsFailed} failed${C.off} ${C.dim}(${rate}%)${C.off}`);
     console.log(`  ${C.dim}polls${C.off}     ${d.pollOk} ok · ${d.pollFailed ? C.ac : C.dim}${d.pollFailed} failed${C.off}`);
     console.log(`  ${C.dim}uptime    ${ago(m.uptimeMs)}${C.off}\n`);
+    break;
+  }
+
+  case 'note': {
+    const [ref, ...words] = rest;
+    if (!ref) die('usage: fleet note <ref> [text…]   (no text reads it, "" clears it)');
+    const s2 = await resolve(ref);
+    const path = `/v1/fleet/${encodeURIComponent(s2.id)}/note`;
+
+    if (!words.length) {
+      const { note } = await api(path);
+      if (!note) { console.log(`${C.dim}no note on ${s2.title}${C.off}`); break; }
+      // `ago` already returns "now" for anything under a minute, so appending
+      // "ago" unconditionally produces "now ago".
+      const when = ago(Date.now() - note.updatedAt);
+      console.log(`\n${C.dim}${s2.title} · ${when === 'now' ? 'just now' : `${when} ago`}${C.off}`);
+      for (const line of note.text.split('\n')) console.log(`  ${line}`);
+      console.log('');
+      break;
+    }
+
+    const text = words.join(' ');
+    const { note } = await api(path, { method: 'PUT', body: JSON.stringify({ text }) });
+    console.log(`${C.dim}${s2.title}: ${note ? 'note saved' : 'note cleared'}${C.off}`);
     break;
   }
 
@@ -495,6 +524,7 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet open <ref>            print the claude.ai URL
   fleet media                 what is playing on the laptop
   fleet play|pause|next|prev  drive it
+  fleet note <ref> [text…]    your own context on a session
   fleet tags                  every group, and how many are in it
   fleet tags <ref> +a -b      tag a session
   fleet all [filters]         preview what a group action would touch

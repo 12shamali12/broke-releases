@@ -50,7 +50,11 @@ for (const client of CLIENTS) {
     // A non-button element with onclick and no keyboard path is unreachable by
     // keyboard and invisible to assistive tech. `pressable()` is the fix; this
     // asserts nothing bypasses it.
-    const pattern = /h\('(div|span|li|section)',\s*\{([^}]*onclick[^}]*)\}/g;
+    // `[^}]*` alone stops at the first `}`, which a template literal in an
+    // attribute value supplies early — that is how a click-only action list in
+    // the cockpit's panel went unnoticed by this very test. Allow one level of
+    // `${...}` nesting.
+    const pattern = /h\('(div|span|li|section)',\s*\{((?:[^{}]|\$\{[^{}]*\})*onclick(?:[^{}]|\$\{[^{}]*\})*)\}/g;
     const orphans = [];
     for (const match of src.matchAll(pattern)) {
       const [, tag, attrs] = match;
@@ -64,6 +68,14 @@ for (const client of CLIENTS) {
       orphans.push(`${tag}: ${attrs.trim().slice(0, 70)}`);
     }
     assert.deepEqual(orphans, [], 'use pressable() so the keyboard can reach it');
+  });
+
+  test(`${client.name}: the click-only check actually sees nested template literals`, async () => {
+    // A guard that silently matches nothing is worse than no guard. This is
+    // the exact shape that slipped past the first version of the pattern.
+    const sample = "h('div', { class: `act${off ? ' off' : ''}`, onclick: () => run() }, 'x')";
+    const pattern = /h\('(div|span|li|section)',\s*\{((?:[^{}]|\$\{[^{}]*\})*onclick(?:[^{}]|\$\{[^{}]*\})*)\}/g;
+    assert.equal([...sample.matchAll(pattern)].length, 1, 'the pattern must see through a template literal');
   });
 
   test(`${client.name}: reduced motion covers animation, not just transition`, async () => {
