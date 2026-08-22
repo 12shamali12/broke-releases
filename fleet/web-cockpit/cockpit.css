@@ -430,6 +430,21 @@ kbd.hot { color: var(--ac); background: var(--acf); border-color: var(--acb); }
 .tr-b[aria-disabled="true"] { opacity: .38; cursor: default; }
 .tr-b[aria-disabled="true"]:hover { background: none; color: var(--dm); border-color: var(--bd); }
 
+/* ---------------- tags ---------------- */
+.tagbar {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  padding: 6px 11px; border-bottom: 1px solid var(--bd); background: var(--s1);
+}
+.tag {
+  font-family: var(--mono); font-size: 9.5px; padding: 2px 6px; border-radius: 2px;
+  background: color-mix(in srgb, var(--ac) 12%, transparent); color: var(--ac);
+  white-space: nowrap;
+}
+/* Derived tags are true but unchosen, so they recede behind the ones someone
+   actually decided on. */
+.tag.derived { background: var(--s2); color: var(--ft); }
+.row .tags { display: flex; gap: 3px; margin-top: 3px; overflow: hidden; }
+
 /* ---- keyboard ----
    This cockpit's premise is that nothing needs the mouse, which only holds if
    you can see where you are. The ring is inset on rows and options so it does

@@ -227,6 +227,23 @@ nav svg { width: 19px; height: 19px; }
 }
 #toast.show { opacity: 1; }
 
+/* ---- tags ---- */
+.tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 9px 0 0; }
+.tag {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .02em;
+  padding: 2px 6px; border-radius: 2px;
+  background: color-mix(in srgb, var(--ac) 11%, transparent);
+  color: var(--ac); white-space: nowrap;
+}
+/* Derived tags are true but unchosen, so they recede behind the ones someone
+   actually decided on. */
+.tag.derived { background: var(--s2); color: var(--ft); }
+
+.tagbar {
+  display: flex; align-items: center; gap: 9px;
+  padding: 0 18px 10px; flex-shrink: 0;
+}
+
 /* ---- access ----
    A focus ring you cannot see is the same as no keyboard support at all, and
    the phone app is reached by a Bluetooth keyboard more often than it looks. */

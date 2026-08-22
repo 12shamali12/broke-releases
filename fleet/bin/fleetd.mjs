@@ -22,6 +22,7 @@ import { PushService } from '../src/push/index.js';
 import { MediaController } from '../src/media.js';
 import { Metrics } from '../src/metrics.js';
 import { NotificationService } from '../src/notify/index.js';
+import { TagStore } from '../src/tags.js';
 import { SnoozeStore } from '../src/snooze.js';
 import { createFleetServer } from '../src/http/server.js';
 
@@ -107,7 +108,12 @@ metricsTimer.unref();
 // to serve the action route a notification's buttons call.
 const notify = new NotificationService({ push, queue, snooze, metrics }).attach(poller);
 
-const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, metrics, notify, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
+const tags = await TagStore.open({ path: join(STATE, 'tags.json') });
+// Tags for sessions that no longer exist would otherwise accumulate forever,
+// and worse, could be re-attached to a recycled id.
+poller.on('fleet', (fleet) => { tags.reconcile(fleet).catch(() => {}); });
+
+const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, metrics, notify, tags, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
 
 poller.on('event', (e) => {
   if (e.severity !== 'push' || !snooze.allows(e)) return;

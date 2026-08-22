@@ -34,6 +34,8 @@ const state = {
   media: null,              // null until probed; then { available, playing, … }
   metrics: null,            // fetched when the stats sheet opens
   notify: null,             // notification rules, fetched with the stats sheet
+  tag: null,                // narrows the rail to one group
+  bulk: null,               // a pending group action, awaiting confirmation
 };
 
 // ---------------------------------------------------------------- api
@@ -69,6 +71,18 @@ function setFleet(fleet) {
 }
 
 const active = (fleet = state.fleet) => (fleet?.sessions ?? []).filter((s) => s.status !== 'archived');
+
+/**
+ * What the rail is currently showing.
+ *
+ * Keyboard navigation reads this rather than `active()`, so ⌘1–9 and j/k mean
+ * "of what I am looking at". Moving to a session the filter has hidden would
+ * be the kind of small dishonesty that makes a keyboard interface feel broken.
+ *
+ * The palette deliberately uses `active()` instead: it is how you escape the
+ * filter, so it has to be able to see past it.
+ */
+const visible = () => (state.tag ? active().filter((s) => s.tags?.includes(state.tag)) : active());
 
 async function refresh() {
   setFleet(await api('/v1/fleet'));
@@ -248,7 +262,7 @@ async function snoozeSession(s) {
 }
 
 function selectByOffset(delta) {
-  const list = active();
+  const list = visible();
   if (!list.length) return;
   const i = list.findIndex((s) => s.id === state.selected);
   state.selected = list[Math.max(0, Math.min(list.length - 1, (i === -1 ? 0 : i) + delta))].id;
@@ -257,7 +271,9 @@ function selectByOffset(delta) {
 }
 
 function selectByIndex(n) {
-  const s = active()[n - 1];
+  // `visible()`, not `active()`: the number you press is the number you can
+  // see beside the row.
+  const s = visible()[n - 1];
   if (!s) return;
   state.selected = s.id;
   state.menu = null;
@@ -495,6 +511,38 @@ function paletteItems() {
     });
   }
 
+  // Groups. Every tag in use, so filtering the rail is one keystroke away and
+  // does not require remembering what exists.
+  const counts = new Map();
+  for (const session of active()) {
+    for (const tag of session.tags ?? []) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  }
+  const groups = [...counts.entries()]
+    .sort((a, b) => Number(a[0].includes(':')) - Number(b[0].includes(':')) || b[1] - a[1]);
+
+  if (state.tag) {
+    rows.push({
+      group: 'Groups', glyph: '×', tone: 'ft', title: 'Show every session', sub: `clear ${state.tag}`,
+      run: () => { state.tag = null; closeOverlay(); },
+    });
+  }
+  for (const [tag, count] of groups) {
+    if (tag === state.tag) continue;
+    rows.push({
+      group: 'Groups', glyph: '⊞', tone: tag.includes(':') ? 'ft' : 'ac',
+      title: tag, sub: `${count} session${count === 1 ? '' : 's'}`,
+      run: () => { state.tag = tag; state.selected = null; closeOverlay(); },
+    });
+    // Acting on the whole group. Never runs immediately: it opens a
+    // confirmation naming every session, because a group action you cannot see
+    // the blast radius of is one people are right to be afraid of.
+    rows.push({
+      group: 'Groups', glyph: '⇉', tone: 'ac',
+      title: `Message everything in ${tag}`, sub: `${count} session${count === 1 ? '' : 's'} — asks first`,
+      run: () => { state.bulk = { tag, verb: 'send', text: '' }; openOverlay('bulk'); },
+    });
+  }
+
   // Media only appears when the laptop can actually do it. A palette entry
   // that always fails is worse than one that is simply not there — the palette
   // is where people go to find out what is possible.
@@ -568,7 +616,7 @@ function topBar() {
 }
 
 function rail() {
-  const list = active();
+  const list = visible();
   const lanes = [['blocked', 'Blocked', 'ac'], ['ready', 'Review ready', 'ok'], ['working', 'Working', 'wk']];
 
   return h('div', { class: 'rail' },
@@ -577,6 +625,14 @@ function rail() {
       h('span', {}, 'Jump to anything'),
       h('span', { class: 'grow' }),
       h('span', { class: 'k', style: 'font-family:var(--mono);font-size:9.5px;border:1px solid var(--bd2);border-radius:2px;padding:1px 4px;color:var(--ft)' }, '⌘K')),
+
+    state.tag
+      ? h('div', { class: 'tagbar' },
+          h('span', { class: 'tag' }, state.tag),
+          h('span', { class: 'grow' }),
+          h('span', pressable({ class: 'tr-b', style: 'width:auto;padding:0 7px', 'aria-label': 'Show every session again' },
+            () => { state.tag = null; render(); }), 'clear'))
+      : null,
 
     h('div', {
       class: 'rail-list',
@@ -1052,6 +1108,75 @@ function notifyRules() {
       `Never more than ${n.maxPerHour} an hour, whatever goes wrong. ${n.coalesceThreshold} or more at once arrive as one.`));
 }
 
+/**
+ * Confirm a group action, with the list in front of you.
+ *
+ * The preview is not a courtesy. This is the one place in Fleet where a
+ * mistake reaches every session at once, so the confirmation names each one,
+ * says which are unreachable, and requires the message to be typed here rather
+ * than carried in from wherever the action was triggered.
+ */
+function bulkOverlay() {
+  const b = state.bulk;
+  if (!b) return null;
+
+  const matched = active().filter((s) => s.tags?.includes(b.tag));
+  const reachable = matched.filter((s) => s.reachable);
+  const asleep = matched.filter((s) => !s.reachable);
+
+  const text = h('textarea', {
+    id: 'bulk-text', placeholder: 'The same message, to all of them…',
+    'aria-label': `Message ${reachable.length} sessions`,
+    oninput: (e) => { b.text = e.target.value; },
+    style: 'width:100%;min-height:72px',
+  });
+  text.value = b.text ?? '';
+
+  const run = async () => {
+    const value = (b.text ?? '').trim();
+    if (!value) return toast('Nothing to send');
+    try {
+      const r = await api('/v1/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ tag: b.tag, verb: 'send', payload: { text: value } }),
+      });
+      // "queued", never "sent" — the guarantee holds harder here, where one
+      // click stands for a dozen messages.
+      toast(`${r.queued} queued${r.failed ? `, ${r.failed} failed` : ''}`);
+      state.bulk = null;
+      closeOverlay();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+
+  return [
+    h('div', { class: 'scrim', onclick: () => { state.bulk = null; closeOverlay(); }, 'aria-hidden': 'true' }),
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Message a group', style: 'width:560px' },
+      h('h2', {}, `Message ${reachable.length} session${reachable.length === 1 ? '' : 's'}`),
+      h('p', { class: 'lede' }, `Everything tagged ${b.tag}. The same message goes to each one, queued separately, so a failure on one does not take the rest with it.`),
+
+      h('div', { style: 'margin:18px 0;max-height:180px;overflow-y:auto;border:1px solid var(--bd);border-radius:3px' },
+        reachable.map((s) =>
+          h('div', { style: 'display:flex;gap:9px;align-items:center;padding:6px 11px;border-bottom:1px solid var(--bd)' },
+            h('span', { class: `dot ${laneDot(s)}`, 'aria-hidden': 'true' }),
+            h('span', { style: 'flex-grow:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, s.title),
+            h('span', { style: 'font-size:10px;color:var(--ft);font-family:var(--mono)' }, s.lane))),
+        asleep.map((s) =>
+          h('div', { style: 'display:flex;gap:9px;align-items:center;padding:6px 11px;opacity:.5;border-bottom:1px solid var(--bd)' },
+            h('span', { class: 'dot ft', 'aria-hidden': 'true' }),
+            h('span', { style: 'flex-grow:1;min-width:0;font-size:12.5px' }, s.title),
+            h('span', { style: 'font-size:10px;color:var(--ft)' }, 'unreachable — skipped')))),
+
+      h('div', { class: 'field' }, text),
+      h('div', { style: 'display:flex;gap:9px;margin-top:13px' },
+        h('button', { id: 'bulk-cancel', class: 'quiet', onclick: () => { state.bulk = null; closeOverlay(); } }, 'Cancel'),
+        h('span', { class: 'grow' }),
+        h('button', { id: 'bulk-send', class: 'primary', disabled: !reachable.length, onclick: run },
+          `Queue ${reachable.length} message${reachable.length === 1 ? '' : 's'}`))),
+  ];
+}
+
 function statsOverlay() {
   const m = state.metrics;
   const t = m?.timeToAcknowledge;
@@ -1258,7 +1383,7 @@ function render() {
           : h('div', { class: 'centre' }, h('div', { class: 'term dim' }, 'No sessions yet.')),
         s ? panel(s) : null);
 
-  const overlay = { palette: paletteOverlay, keys: keysOverlay, look: lookOverlay, stats: statsOverlay }[state.overlay];
+  const overlay = { palette: paletteOverlay, keys: keysOverlay, look: lookOverlay, stats: statsOverlay, bulk: bulkOverlay }[state.overlay];
   app.replaceChildren(topBar(), body, ...(overlay ? overlay() : []));
 
   if (focusId) {

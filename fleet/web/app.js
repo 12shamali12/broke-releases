@@ -59,6 +59,8 @@ const state = {
   view: 'board',
   selected: null,
   query: '',
+  /** Narrows the board to one group. Null means everything. */
+  tag: null,
   /** Ids already drawn on the board — anything absent gets the entrance. */
   metrics: null,
   notify: null,
@@ -399,6 +401,15 @@ function sessionCard(s) {
           h('div', { class: 'body' }, need))
       : h('div', { class: 'detail', 'aria-hidden': 'true' }, s.summary?.detail ?? 'No status reported.'),
 
+    s.tags?.length
+      ? h('div', { class: 'tags', 'aria-hidden': 'true' },
+          // Manual tags first: they are the ones someone chose, so they carry
+          // more meaning than `env:bridge`, which every session has.
+          [...s.tags].sort((a, b) => Number(a.includes(':')) - Number(b.includes(':')))
+            .slice(0, 4)
+            .map((t) => h('span', { class: `tag${t.includes(':') ? ' derived' : ''}` }, t)))
+      : null,
+
     h('div', { class: 'facts', 'aria-hidden': 'true' },
       h('span', {}, s.modelId?.replace('claude-', '') ?? '—'),
       h('span', {}, '·'),
@@ -413,7 +424,10 @@ function viewBoard() {
 
   const lane = state.settings.lane ?? 'blocked';
   const active = fleet.sessions.filter((s) => s.status !== 'archived');
-  const shown = lane === 'all' ? active : active.filter((s) => s.lane === lane);
+  const byLane = lane === 'all' ? active : active.filter((s) => s.lane === lane);
+  // A tag filter narrows whatever lane you are in, rather than replacing it:
+  // "blocked, in the importer work" is the question people actually have.
+  const shown = state.tag ? byLane.filter((s) => s.tags?.includes(state.tag)) : byLane;
   const { stale, age } = staleness();
   const rl = fleet.rateLimit;
 
@@ -450,6 +464,17 @@ function viewBoard() {
        h('span', {}, l.label), h('span', { class: 'n' }, String(n)));
   }));
 
+  const tagBar = state.tag
+    ? h('div', { class: 'tagbar' },
+        h('span', { class: 'tag' }, state.tag),
+        h('span', { style: 'flex-grow:1;font-size:11.5px;color:var(--dm)' },
+          `${shown.length} of ${byLane.length}`),
+        h('button', {
+          id: 'clear-tag', class: 'chip', style: 'flex-grow:0',
+          onclick: () => { state.tag = null; render(); },
+        }, 'clear'))
+    : null;
+
   const outbox = state.outbox.length
     ? h('div', {},
         h('div', { class: 'rule' }, h('span', { class: 't' }, 'Queued · sends when it reconnects'), h('span', { class: 'line' })),
@@ -467,7 +492,7 @@ function viewBoard() {
           ? "You'll get a push the moment a session blocks. No need to keep checking."
           : 'Try another lane.'));
 
-  return [head, banner, tabs, body];
+  return [head, banner, tabs, tagBar, body];
 }
 
 function viewSession() {
@@ -542,6 +567,31 @@ function viewSession() {
           h('span', { class: 'k' }, 'Model'), h('span', { class: 'v' }, s.modelId?.replace('claude-', '') ?? '—')),
         h('div', { class: 'listrow', style: 'flex-grow:1;margin:0' },
           h('span', { class: 'k' }, 'Effort'), h('span', { class: 'v' }, s.effort ?? '—'))),
+
+      h('div', { class: 'rule' }, h('span', { class: 't' }, 'Groups'), h('span', { class: 'line' })),
+      h('div', { class: 'chips', role: 'group', 'aria-label': 'Groups this session is in' },
+        (s.tags ?? []).map((t) =>
+          h('button', {
+            id: `tag-${t}`, class: `chip${t.includes(':') ? ' quiet' : ''}`, style: 'flex-grow:0',
+            'aria-label': `Show everything tagged ${t}`,
+            onclick: () => { state.tag = t; go('board'); },
+          }, t)),
+        h('button', {
+          id: 'add-tag', class: 'chip', style: 'flex-grow:0;border-style:dashed',
+          'aria-label': 'Add a group to this session',
+          onclick: async () => {
+            // A prompt rather than an inline field: adding a tag is rare
+            // enough that a permanent input would cost more room than it earns.
+            const wanted = prompt('Tag this session');
+            if (!wanted) return;
+            try {
+              await api(`/v1/fleet/${encodeURIComponent(s.id)}/tags`, {
+                method: 'POST', body: JSON.stringify({ add: [wanted] }),
+              });
+              await refresh();
+            } catch (err) { toast(err.message); }
+          },
+        }, '+ tag')),
 
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Effort'), h('span', { class: 'line' })),
       h('div', { class: 'chips', role: 'group', 'aria-label': 'Reasoning effort' },

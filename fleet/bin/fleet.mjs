@@ -303,6 +303,77 @@ switch (command) {
     break;
   }
 
+  case 'tags': {
+    if (rest.length >= 2) {
+      // fleet tags <ref> +work -old
+      const s2 = await resolve(rest[0]);
+      const add = rest.slice(1).filter((t) => t.startsWith('+')).map((t) => t.slice(1));
+      const remove = rest.slice(1).filter((t) => t.startsWith('-')).map((t) => t.slice(1));
+      if (!add.length && !remove.length) die('usage: fleet tags <ref> +new-tag -old-tag');
+      const r = await api(`/v1/fleet/${encodeURIComponent(s2.id)}/tags`, {
+        method: 'POST', body: JSON.stringify({ add, remove }),
+      });
+      console.log(`${C.dim}${s2.title}: ${r.tags.join(' ') || 'no tags'}${C.off}`);
+      break;
+    }
+
+    const { tags } = await api('/v1/tags');
+    if (!tags.length) { console.log(`${C.dim}no tags yet${C.off}`); break; }
+    console.log('');
+    for (const t of tags) {
+      const colour = t.derived ? C.dim : C.ac;
+      console.log(`  ${String(t.count).padStart(3)} ${colour}${t.tag}${C.off}`);
+    }
+    console.log(`\n${C.dim}dimmed tags are derived from the session itself — nothing to maintain${C.off}\n`);
+    break;
+  }
+
+  case 'all': {
+    // fleet all [--tag x] [--lane blocked] <verb> [text…]
+    const flags = {};
+    const args = [];
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === '--tag' || rest[i] === '--lane') { flags[rest[i].slice(2)] = rest[i + 1]; i += 1; }
+      else if (rest[i] === '--unreachable') flags.includeUnreachable = true;
+      else args.push(rest[i]);
+    }
+    const [verb, ...words] = args;
+
+    const query = new URLSearchParams();
+    if (flags.tag) query.set('tag', flags.tag);
+    if (flags.lane) query.set('lane', flags.lane);
+    if (flags.includeUnreachable) query.set('includeUnreachable', 'true');
+
+    const preview = await api(`/v1/bulk?${query}`);
+    if (!verb) {
+      // No verb: this is the preview, which is the safe default. Seeing the
+      // blast radius before acting is the whole reason bulk is usable.
+      console.log(`\n${C.b}${preview.count} session${preview.count === 1 ? '' : 's'}${C.off}${C.dim} would be affected${C.off}`);
+      for (const s2 of preview.sessions) console.log(`  ${C.dim}·${C.off} ${s2.title} ${C.dim}${s2.lane}${C.off}`);
+      for (const s2 of preview.skippedUnreachable) console.log(`  ${C.dim}· ${s2.title} — unreachable, skipped${C.off}`);
+      console.log(`\n${C.dim}add a verb to act: fleet all --lane blocked send "continue"${C.off}\n`);
+      break;
+    }
+
+    const payload = verb === 'send' ? { text: words.join(' ') }
+      : verb === 'effort' ? { effort: words[0] }
+      : verb === 'model' ? { model: words[0] }
+      : verb === 'compact' ? (words.length ? { focus: words.join(' ') } : {})
+      : {};
+
+    const r = await api('/v1/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ ...flags, verb, payload }),
+    });
+    console.log(`${C.dim}${verb} → ${C.off}${C.ok}${r.queued} queued${C.off}` +
+      `${r.failed ? ` ${C.ac}${r.failed} failed${C.off}` : ''}` +
+      `${r.skippedUnreachable.length ? `${C.dim} · ${r.skippedUnreachable.length} unreachable, skipped${C.off}` : ''}`);
+    for (const one of r.results.filter((x) => !x.ok)) {
+      console.log(`  ${C.ac}✗${C.off} ${one.title}: ${one.error}`);
+    }
+    break;
+  }
+
   case 'alerts': {
     const n = await api('/v1/notify/settings');
     const hour = (x) => `${String(x).padStart(2, '0')}:00`;
@@ -424,6 +495,10 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet open <ref>            print the claude.ai URL
   fleet media                 what is playing on the laptop
   fleet play|pause|next|prev  drive it
+  fleet tags                  every group, and how many are in it
+  fleet tags <ref> +a -b      tag a session
+  fleet all [filters]         preview what a group action would touch
+  fleet all --lane blocked send "continue"
   fleet stats [days]          is this actually helping? (default 7)
   fleet alerts                how Fleet tells you, and what is escalating
   fleet alerts escalate off   one alert per blocked session, no follow-ups

@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 233 tests, no network, no CLI, no credentials
+npm test                        # 263 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -56,6 +56,11 @@ GET    /v1/push/key                  the VAPID public key
 POST   /v1/push/subscribe            {endpoint, keys}
 DELETE /v1/push/subscribe            {endpoint}
 POST   /v1/push/test                 a real notification, end to end
+GET    /v1/tags                      every group, and how many are in it
+GET    /v1/fleet/:id/tags            one session's groups
+POST   /v1/fleet/:id/tags            {add, remove}
+GET    /v1/bulk?tag=&lane=           exactly what a group action would touch
+POST   /v1/bulk                      {tag|lane|ids, verb, payload}
 POST   /v1/notify/action             {token, action} — the notification's buttons
 GET    /v1/notify/settings           the rules, and what is escalating
 PUT    /v1/notify/settings           change them
@@ -147,6 +152,7 @@ src/metrics.js          time to acknowledge, in percentiles, including open epis
 src/notify/policy.js    escalation, coalescing, quiet hours, the hourly ceiling
 src/notify/tokens.js    what a notification is allowed to do, and for how long
 src/notify/index.js     the assembly: policy + tokens + push + queue + snooze
+src/tags.js             grouping, derived and manual, and who a bulk action hits
 src/atomic.js           write-then-rename, unique per write, shared by all four stores
 src/push/crypto.js      RFC 8291 + 8188 + 8292, from the specs, no deps
 src/push/index.js       subscriptions, delivery, quiet hours
@@ -224,6 +230,29 @@ It **expires** rather than toggling off — 4 hours by default, 72 at most —
 because an indefinite mute is how a session goes quiet forever. And
 `command.failed` is never suppressed: snooze is a statement about a session's
 own noise, not permission to lose a message you asked to send.
+
+## Groups, and acting on one
+
+Twelve sessions is where a flat list stops working. You do not think "session
+7, 9 and 11" — you think "the importer work".
+
+**Most grouping requires no configuration**, because the moment you need
+grouping is the moment you have too many sessions to have been labelling them.
+A session's repo, branch, lane, environment, model and whatever tags the
+platform already set on it all become groups on their own. Manual tags are
+additive. Derived tags are never stored — they are recomputed each snapshot, so
+a session that changes branch re-tags itself and a stale `branch:old` cannot
+outlive the fact it described. A manual tag cannot use a reserved prefix,
+because shadowing a derived one would silently change what a bulk action hits.
+
+**Bulk is the most dangerous route here**, so it is built to be previewed:
+`GET /v1/bulk` answers exactly what the matching `POST` would touch, the
+cockpit confirmation names every session before anything fires, and the
+response reports per-session outcomes rather than one `ok`. Unreachable
+sessions are excluded and listed rather than silently included. There is a hard
+limit of 25, stated rather than silently truncated — half-doing a bulk action
+is worse than refusing it, because you cannot tell from the result which half
+happened.
 
 ## Notifications are a system, not a push
 
@@ -358,3 +387,4 @@ first is a design change; the second is real work. Undecided — see
 - [x] 07 Snooze, media transport, accessibility pass on both clients
 - [x] 08 Metrics — does this actually help?
 - [x] 09 Notifications — escalation, coalescing, lock-screen actions, receipts
+- [x] 10 Groups and bulk — derived tags, previewed group actions

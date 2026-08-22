@@ -12,6 +12,7 @@ import { EventLog, StreamHub } from './events.js';
 import { createStaticHandler } from './static.js';
 import { createMcpHandler, handleBatch } from './mcp.js';
 import { VERBS as MEDIA_VERBS } from '../media.js';
+import { selectSessions } from '../tags.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const VERBS = new Set(['send', 'model', 'effort', 'compact', 'rename']);
@@ -103,7 +104,10 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, notify = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
+/** The most sessions one bulk action may touch. A typo here reaches all of them. */
+export const BULK_LIMIT = 25;
+
+export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, notify = null, tags = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
@@ -119,7 +123,8 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
   function withHealth(fleet) {
     // Snoozed sessions stay on the board, marked — a mute you cannot see is
     // indistinguishable from a bug.
-    const decorated = snooze ? snooze.decorate(fleet) : fleet;
+    let decorated = snooze ? snooze.decorate(fleet) : fleet;
+    decorated = tags ? tags.decorate(decorated) : decorated;
     return { ...decorated, health: poller.health };
   }
 
@@ -241,6 +246,107 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
       }
       if (method === 'DELETE') {
         return send(res, 200, { woken: await snooze.wake(sessionId) });
+      }
+    }
+
+    // --- tags and bulk ---
+
+    if (path === '/v1/tags' && method === 'GET') {
+      if (!tags) throw new HttpError(503, 'tags are not configured');
+      return send(res, 200, { tags: tags.index(requireFleet()) });
+    }
+
+    if (segments[0] === 'v1' && segments[1] === 'fleet' && segments[2] && segments[3] === 'tags') {
+      if (!tags) throw new HttpError(503, 'tags are not configured');
+      const sessionId = decodeURIComponent(segments[2]);
+      requireSession(sessionId);
+
+      if (method === 'GET') return send(res, 200, { tags: tags.tagsFor(requireSession(sessionId)) });
+      if (method === 'POST') {
+        const body = await readJson(req);
+        try {
+          return send(res, 200, await tags.update(sessionId, { add: body.add ?? [], remove: body.remove ?? [] }));
+        } catch (err) {
+          throw new HttpError(400, err.message);
+        }
+      }
+    }
+
+    /**
+     * Act on a group.
+     *
+     * The most dangerous endpoint here, so it is built to be previewed: `GET`
+     * answers exactly what a `POST` with the same query would touch, and the
+     * `POST` reports per-session outcomes rather than a single ok. A bulk
+     * action you cannot see the blast radius of is one people are right to be
+     * afraid of, and will therefore not use.
+     */
+    if (path === '/v1/bulk') {
+      if (!tags) throw new HttpError(503, 'tags are not configured');
+
+      const fromQuery = {
+        tag: url.searchParams.get('tag'),
+        lane: url.searchParams.get('lane'),
+        includeUnreachable: url.searchParams.get('includeUnreachable') === 'true',
+      };
+
+      if (method === 'GET') {
+        const { sessions, skippedUnreachable } = selectSessions(requireFleet(), tags, fromQuery);
+        return send(res, 200, {
+          count: sessions.length,
+          sessions: sessions.map((s) => ({ id: s.id, title: s.title, lane: s.lane })),
+          skippedUnreachable,
+        });
+      }
+
+      if (method === 'POST') {
+        const body = await readJson(req);
+        const verb = String(body.verb ?? '');
+        if (!VERBS.has(verb)) throw new HttpError(400, `verb must be one of: ${[...VERBS].join(', ')}`);
+        const payload = validateCommand(verb, body.payload ?? {});
+
+        const { sessions, skippedUnreachable } = selectSessions(requireFleet(), tags, {
+          tag: body.tag ?? fromQuery.tag,
+          lane: body.lane ?? fromQuery.lane,
+          ids: body.ids ?? null,
+          includeUnreachable: body.includeUnreachable ?? fromQuery.includeUnreachable,
+        });
+
+        if (!sessions.length) throw new HttpError(400, 'that selection matches no reachable session');
+        // A cap, because this is the one route where a typo reaches every
+        // session at once. Above it, say so rather than half-doing it.
+        if (sessions.length > BULK_LIMIT) {
+          throw new HttpError(400, `that would touch ${sessions.length} sessions; the limit is ${BULK_LIMIT}`);
+        }
+
+        const results = [];
+        for (const session of sessions) {
+          try {
+            const command = await queue.enqueue({
+              sessionId: session.id,
+              verb,
+              payload,
+              origin: `bulk:${device.label ?? device.id}`,
+            });
+            metrics?.queued(session.id);
+            notify?.acknowledge(session.id);
+            results.push({ id: session.id, title: session.title, ok: true, commandId: command.id, reachable: session.reachable });
+          } catch (err) {
+            // One session failing must not silently take the rest with it,
+            // and must not be reported as though it succeeded.
+            results.push({ id: session.id, title: session.title, ok: false, error: err.message });
+          }
+        }
+
+        const failed = results.filter((r) => !r.ok).length;
+        return send(res, 202, {
+          verb,
+          queued: results.length - failed,
+          failed,
+          skippedUnreachable,
+          results,
+          note: 'queued, not sent — check /v1/commands for delivery',
+        });
       }
     }
 

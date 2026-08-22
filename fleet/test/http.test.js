@@ -15,13 +15,15 @@ import { createFleetServer, matchSessions, validateCommand } from '../src/http/s
 import { Metrics } from '../src/metrics.js';
 import { NotificationService } from '../src/notify/index.js';
 import { SnoozeStore } from '../src/snooze.js';
+import { TagStore } from '../src/tags.js';
+import { BULK_LIMIT } from '../src/http/server.js';
 
 const FIXTURE = fileURLToPath(new URL('../fixtures/fleet-series.json', import.meta.url));
 const SNAPSHOTS = JSON.parse(await readFile(FIXTURE, 'utf8'));
 const SESSION_ID = 'session_01FIXTUREaaaaaaaaaaaaaaaa';
 const UNREACHABLE_ID = 'session_01FIXTUREbbbbbbbbbbbbbbbb';
 
-async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = false } = {}) {
+async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = false, withTags = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'fleet-http-'));
   const queue = await CommandQueue.open({ path: join(dir, 'commands.json') });
   const devices = await DeviceStore.open({ path: join(dir, 'devices.json') });
@@ -40,7 +42,8 @@ async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = fal
   const notify = withNotify
     ? new NotificationService({ push: null, queue, snooze: snoozeStore, metrics })
     : null;
-  const { server, log, hub } = createFleetServer({ poller, queue, devices, metrics, notify, snooze: snoozeStore });
+  const tagStore = withTags ? new TagStore({}) : null;
+  const { server, log, hub } = createFleetServer({ poller, queue, devices, metrics, notify, snooze: snoozeStore, tags: tagStore });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -62,7 +65,7 @@ async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = fal
     });
 
   return {
-    base, call, poller, queue, devices, log, hub, metrics, notify, snoozeStore, token: paired.token,
+    base, call, poller, queue, devices, log, hub, metrics, notify, snoozeStore, tagStore, token: paired.token,
     cleanup: async () => {
       hub.close();
       await new Promise((r) => server.close(r));
@@ -621,6 +624,185 @@ test('settings need a device token; actions do not', async () => {
   try {
     const res = await fetch(`${h.base}/v1/notify/settings`);
     assert.equal(res.status, 401, 'reading configuration is not something a notification may do');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+
+// ---------------------------------------------------------------- bulk
+
+test('a bulk action can be previewed exactly before it happens', async () => {
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    const preview = await h.call('/v1/bulk?lane=blocked').then((r) => r.json());
+
+    // GET answers precisely what POST would touch — that is the whole point.
+    const done = await h.call('/v1/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ lane: 'blocked', verb: 'send', payload: { text: 'continue' } }),
+    }).then((r) => r.json());
+
+    assert.equal(done.queued, preview.count);
+    assert.deepEqual(done.results.map((r) => r.id).sort(), preview.sessions.map((s) => s.id).sort());
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('bulk queues, and says queued rather than sent', async () => {
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    const res = await h.call('/v1/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ lane: 'blocked', verb: 'send', payload: { text: 'continue' } }),
+    });
+    assert.equal(res.status, 202, 'accepted, not done');
+    const body = await res.json();
+    assert.match(body.note, /queued, not sent/);
+    for (const r of body.results) assert.equal(r.ok, true);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('bulk never touches an unreachable session without being told to', async () => {
+  // Its command would be held rather than lost, but in a bulk action that is
+  // almost never what was meant.
+  const h = await harness({ withTags: true });
+  try {
+    // The second snapshot is where a bridge session goes disconnected.
+    await h.poller.tick();
+    await h.poller.tick();
+    const body = await h.call('/v1/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ verb: 'send', payload: { text: 'x' } }),
+    }).then((r) => r.json());
+
+    assert.ok(body.skippedUnreachable.length >= 1, 'the fixture has an unreachable session');
+    assert.ok(!body.results.some((r) => r.id === UNREACHABLE_ID));
+    assert.equal(h.queue.pendingFor(UNREACHABLE_ID).length, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('bulk refuses a verb that is not a verb', async () => {
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    for (const verb of ['delete', 'archive', '', '../send', 'eval']) {
+      const res = await h.call('/v1/bulk', {
+        method: 'POST', body: JSON.stringify({ lane: 'blocked', verb, payload: {} }),
+      });
+      assert.equal(res.status, 400, `${verb} must not be reachable`);
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('bulk validates the payload exactly as a single send does', async () => {
+  // Otherwise bulk becomes the way to get an invalid command into the queue.
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    const res = await h.call('/v1/bulk', {
+      method: 'POST', body: JSON.stringify({ lane: 'blocked', verb: 'effort', payload: { effort: 'colossal' } }),
+    });
+    assert.equal(res.status, 400);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a selection matching nothing is refused, not quietly successful', async () => {
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    const res = await h.call('/v1/bulk', {
+      method: 'POST', body: JSON.stringify({ tag: 'nonexistent', verb: 'send', payload: { text: 'x' } }),
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /matches no reachable session/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('the bulk limit is stated rather than silently truncating', async () => {
+  // Half-doing a bulk action is worse than refusing it: you cannot tell from
+  // the result which half happened.
+  // Raw records, the shape the adapter actually returns.
+  const many = Array.from({ length: BULK_LIMIT + 5 }, (_, i) => ({
+    id: `session_bulk_${i}`,
+    title: `S${i}`,
+    session_status: 'SESSION_STATUS_IDLE',
+    status_bucket: 'SESSION_STATUS_BUCKET_NEEDS_INPUT',
+    environment_kind: 'anthropic_cloud',
+    connection_status: 'connected',
+    updated_at: new Date().toISOString(),
+    post_turn_summary: { status_category: 'need_input', status_detail: 'x', needs_action: 'x' },
+  }));
+  const h = await harness({ withTags: true, snapshots: [many] });
+  try {
+    await h.poller.tick();
+    const res = await h.call('/v1/bulk', {
+      method: 'POST', body: JSON.stringify({ verb: 'send', payload: { text: 'x' } }),
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, new RegExp(`limit is ${BULK_LIMIT}`));
+    assert.equal(h.queue.all.length, 0, 'and nothing was queued at all');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a tag can be added, appears on the board, and groups a bulk action', async () => {
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    await h.call(`/v1/fleet/${SESSION_ID}/tags`, {
+      method: 'POST', body: JSON.stringify({ add: ['Importer Work'] }),
+    });
+
+    const fleet = await h.call('/v1/fleet').then((r) => r.json());
+    const session = fleet.sessions.find((s) => s.id === SESSION_ID);
+    assert.ok(session.tags.includes('importer-work'), 'normalised, and visible on the board');
+
+    const body = await h.call('/v1/bulk', {
+      method: 'POST', body: JSON.stringify({ tag: 'importer-work', verb: 'send', payload: { text: 'go' } }),
+    }).then((r) => r.json());
+    assert.deepEqual(body.results.map((r) => r.id), [SESSION_ID]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a manual tag that would shadow a derived one is refused with the reason', async () => {
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    const res = await h.call(`/v1/fleet/${SESSION_ID}/tags`, {
+      method: 'POST', body: JSON.stringify({ add: ['lane:blocked'] }),
+    });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /reserved prefix/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('the tag index reports what exists to group by', async () => {
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    const { tags } = await h.call('/v1/tags').then((r) => r.json());
+    assert.ok(tags.length, 'derived tags exist with no configuration at all');
+    assert.ok(tags.every((t) => typeof t.count === 'number'));
+    assert.ok(tags.some((t) => t.tag.startsWith('lane:')));
   } finally {
     await h.cleanup();
   }
