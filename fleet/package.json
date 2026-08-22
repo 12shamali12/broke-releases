@@ -1,0 +1,19 @@
+{
+  "name": "fleetd",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "One console for every Claude Code session: poll, diff, notify, control.",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "fleet-spike": "./bin/spike.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "spike": "node bin/spike.mjs",
+    "demo": "node bin/demo.mjs"
+  },
+  "dependencies": {}
+}
