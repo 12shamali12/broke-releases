@@ -119,7 +119,29 @@ const h = (tag, attrs = {}, ...kids) => {
   }
   return el;
 };
-const svg = (d, cls) => h('span', { class: cls, html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%">${d}</svg>` });
+const svg = (d, cls) => h('span', { class: cls, 'aria-hidden': 'true', html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%">${d}</svg>` });
+
+/**
+ * Give a non-button element real button behaviour.
+ *
+ * This cockpit's whole premise is that nothing needs the mouse, and a `<div
+ * onclick>` breaks that promise silently: it looks pressable, it is not
+ * focusable, and no keyboard or screen reader can reach it.
+ */
+function pressable(attrs, onActivate) {
+  return {
+    ...attrs,
+    role: attrs.role ?? 'button',
+    tabindex: attrs.tabindex ?? '0',
+    onclick: onActivate,
+    onkeydown: (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onActivate(e);
+    },
+  };
+}
 
 function ago(ms) {
   if (ms == null) return '—';
@@ -257,9 +279,10 @@ function onKey(e) {
   // turn must never depend on where focus happens to be.
   if (e.key === 'Escape') {
     if (state.overlay || state.menu) {
-      state.overlay = null;
       state.menu = null;
-      render();
+      // Closing with esc is the case where focus return matters most: the
+      // person is already navigating by keyboard.
+      closeOverlay();
       return e.preventDefault();
     }
     const s = current();
@@ -271,6 +294,23 @@ function onKey(e) {
     return;
   }
 
+  // Tab must not walk out of an open overlay into the page behind it. A modal
+  // you can tab out of is a modal only for the mouse.
+  if (state.overlay && e.key === 'Tab') {
+    const box = document.querySelector('.palette, .sheet, [role="dialog"]');
+    if (box) {
+      const stops = [...box.querySelectorAll('a[href], button, input, textarea, select, [tabindex]')]
+        .filter((el) => !el.disabled && el.getAttribute('tabindex') !== '-1' && el.offsetParent !== null);
+      if (stops.length) {
+        const first = stops[0];
+        const last = stops[stops.length - 1];
+        const at = document.activeElement;
+        if (e.shiftKey && (at === first || !box.contains(at))) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && (at === last || !box.contains(at))) { e.preventDefault(); first.focus(); }
+      }
+    }
+  }
+
   if (state.overlay === 'palette') return paletteKey(e);
 
   if (mod && e.key === 'Enter' && typing) {
@@ -280,8 +320,8 @@ function onKey(e) {
   if (typing && !mod) return;
 
   if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); return openPalette(); }
-  if (mod && e.key === '/') { e.preventDefault(); state.overlay = 'keys'; return render(); }
-  if (mod && e.key === ',') { e.preventDefault(); state.overlay = 'look'; return render(); }
+  if (mod && e.key === '/') { e.preventDefault(); return openOverlay('keys'); }
+  if (mod && e.key === ',') { e.preventDefault(); return openOverlay('look'); }
   if (mod && e.key === '\\') { e.preventDefault(); state.view = state.view === 'wall' ? 'cockpit' : 'wall'; return render(); }
   if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); return bumpSize(1); }
   if (mod && e.key === '-') { e.preventDefault(); return bumpSize(-1); }
@@ -321,10 +361,34 @@ function sendComposer() {
   box.style.height = 'auto';
 }
 
-// ---------------------------------------------------------------- palette
+// ---------------------------------------------------------------- overlays
+
+/**
+ * Where focus goes when an overlay closes.
+ *
+ * Dropping focus on the body is the classic modal bug: a keyboard user closes
+ * the palette and lands back at the top of the document, having lost the row
+ * they were working in. Remember what opened it, and give it back.
+ */
+let focusBefore = null;
+
+function openOverlay(name) {
+  if (!state.overlay) focusBefore = document.activeElement?.id ?? null;
+  state.overlay = name;
+  render();
+}
+
+function closeOverlay() {
+  state.overlay = null;
+  render();
+  const target = focusBefore && document.getElementById(focusBefore);
+  focusBefore = null;
+  if (target) target.focus({ preventScroll: true });
+  else document.querySelector('.row[aria-selected="true"]')?.focus({ preventScroll: true });
+}
 
 function openPalette() {
-  state.overlay = 'palette';
+  openOverlay('palette');
   state.paletteQuery = '';
   state.paletteIndex = 0;
   render();
@@ -342,7 +406,7 @@ function paletteItems() {
       group: 'Sessions', glyph: '●', tone: laneDot(session),
       title: session.title,
       sub: [session.repo, session.branch, session.reachable ? session.lane : 'unreachable'].filter(Boolean).join(' · '),
-      run: () => { state.selected = session.id; state.overlay = null; render(); },
+      run: () => { state.selected = session.id; closeOverlay(); },
     });
   }
 
@@ -351,35 +415,35 @@ function paletteItems() {
       rows.push({
         group: 'This session', glyph: '⚙', tone: 'ac',
         title: `Set effort to ${eff}`, sub: `currently ${s.effort ?? '—'}`,
-        run: () => { dispatch(s.id, 'effort', { effort: eff }); state.overlay = null; render(); },
+        run: () => { dispatch(s.id, 'effort', { effort: eff }); closeOverlay(); },
       });
     }
     for (const [id, name, ctx] of MODELS) {
       rows.push({
         group: 'This session', glyph: '◆', tone: 'ac',
         title: `Switch to ${name}`, sub: `${ctx} context`,
-        run: () => { dispatch(s.id, 'model', { model: id }); state.overlay = null; render(); },
+        run: () => { dispatch(s.id, 'model', { model: id }); closeOverlay(); },
       });
     }
     rows.push({
       group: 'This session', glyph: '⌁', tone: 'wk',
       title: s.snoozedUntil ? 'Wake this session' : 'Snooze alerts for 4 hours',
       sub: s.snoozedUntil ? `muted for another ${ago(s.snoozedUntil - Date.now())}` : 'it stays on the board, marked',
-      run: () => { snoozeSession(s); state.overlay = null; render(); },
+      run: () => { snoozeSession(s); closeOverlay(); },
     });
     rows.push({
       group: 'This session', glyph: '↯', tone: 'ac', title: 'Compact the context', sub: 'summarise history',
-      run: () => { dispatch(s.id, 'compact', {}); state.overlay = null; render(); },
+      run: () => { dispatch(s.id, 'compact', {}); closeOverlay(); },
     });
   }
 
   rows.push(
     { group: 'View', glyph: '▦', tone: 'wk', title: state.view === 'wall' ? 'Show the cockpit' : 'Show the wall', sub: '⌘\\',
-      run: () => { state.view = state.view === 'wall' ? 'cockpit' : 'wall'; state.overlay = null; render(); } },
+      run: () => { state.view = state.view === 'wall' ? 'cockpit' : 'wall'; closeOverlay(); } },
     { group: 'View', glyph: 'A', tone: 'wk', title: 'Appearance', sub: 'size, typeface, colours',
-      run: () => { state.overlay = 'look'; render(); } },
+      run: () => { openOverlay('look'); } },
     { group: 'View', glyph: '⌨', tone: 'wk', title: 'Keyboard shortcuts', sub: '⌘/',
-      run: () => { state.overlay = 'keys'; render(); } },
+      run: () => { openOverlay('keys'); } },
     { group: 'View', glyph: '◐', tone: 'wk', title: `Theme: ${state.look.theme}`, sub: 'system · light · dark',
       run: () => {
         const order = ['system', 'light', 'dark'];
@@ -419,7 +483,7 @@ function topBar() {
       ? h('div', { class: 'chip' }, h('span', { class: 'lbl' }, '5H'),
           h('span', { class: 'val' }, `resets ${ago(rl.resetsAt - Date.now())}`))
       : null,
-    h('div', { class: 'chip act', onclick: () => { state.overlay = 'look'; render(); } },
+    h('div', pressable({ class: 'chip act', 'aria-label': `Appearance. Text size ${SIZES[state.look.size]} pixels` }, () => openOverlay('look')),
       h('span', { class: 'lbl' }, 'TEXT'), h('span', { class: 'val' }, `${SIZES[state.look.size]}px`), h('span', { class: 'k' }, '⌘,')),
     h('div', { class: 'seg' },
       h('button', { 'aria-pressed': String(state.view === 'cockpit'), onclick: () => { state.view = 'cockpit'; render(); } }, 'Cockpit'),
@@ -432,13 +496,18 @@ function rail() {
   const lanes = [['blocked', 'Blocked', 'ac'], ['ready', 'Review ready', 'ok'], ['working', 'Working', 'wk']];
 
   return h('div', { class: 'rail' },
-    h('div', { class: 'rail-search', onclick: openPalette },
+    h('div', pressable({ class: 'rail-search', 'aria-label': 'Jump to anything. Command K' }, openPalette),
       svg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>', 'ico'),
       h('span', {}, 'Jump to anything'),
       h('span', { class: 'grow' }),
       h('span', { class: 'k', style: 'font-family:var(--mono);font-size:9.5px;border:1px solid var(--bd2);border-radius:2px;padding:1px 4px;color:var(--ft)' }, '⌘K')),
 
-    h('div', { class: 'rail-list' },
+    h('div', {
+      class: 'rail-list',
+      role: 'listbox',
+      'aria-label': 'Sessions',
+      'aria-activedescendant': state.selected ? `rail-${state.selected}` : null,
+    },
       lanes.map(([lane, label, tone]) => {
         const rows = list.filter((s) => s.lane === lane);
         if (!rows.length) return null;
@@ -461,12 +530,21 @@ function rail() {
 
 function railRow(s, index) {
   const pct = s.contextMax ? Math.min(100, Math.round(((s.contextUsed ?? 0) / s.contextMax) * 100)) : 0;
-  return h('div', {
+  // The rail is one list where exactly one thing is chosen, so it is a
+  // listbox. `tabindex` is roving: only the selected row is in the tab order,
+  // and ⌘↑/⌘↓ and j/k move between them — tabbing through forty sessions to
+  // reach the composer would be its own kind of inaccessible.
+  const selected = s.id === state.selected;
+  return h('div', pressable({
     class: `row${state.changed.has(s.id) ? ' changed' : ''}`,
-    'aria-selected': String(s.id === state.selected),
-    onclick: () => { state.selected = s.id; state.menu = null; render(); },
-  },
-    h('span', { class: `dot ${laneDot(s)}` }),
+    role: 'option',
+    id: `rail-${s.id}`,
+    tabindex: selected ? '0' : '-1',
+    'aria-selected': String(selected),
+    'aria-label': `${index}. ${s.title}, ${s.reachable ? s.lane : 'unreachable'}, idle ${ago(s.staleFor)}${
+      s.summary?.needsAction ? `, needs you: ${s.summary.needsAction}` : ''}`,
+  }, () => { state.selected = s.id; state.menu = null; render(); }),
+    h('span', { class: `dot ${laneDot(s)}`, 'aria-hidden': 'true' }),
     h('div', { style: 'flex-grow:1;min-width:0' },
       h('div', { class: 'title' }, s.title),
       h('div', { class: 'sub' },
@@ -508,18 +586,19 @@ function sessionHead(s) {
     }, svg('<rect x="6" y="6" width="12" height="12" rx="2"/>', 'ico'), 'Stop',
        h('span', { class: 'k', style: running ? 'color:var(--onac);border-color:var(--onac)' : '' }, 'esc')),
 
-    h('div', { class: 'chip act', onclick: () => window.open(`https://claude.ai/code/${s.id}`, '_blank') },
+    h('div', pressable({ class: 'chip act', 'aria-label': `Open ${s.title} on claude.ai` },
+      () => window.open(`https://claude.ai/code/${s.id}`, '_blank')),
       'Open', h('span', { class: 'k' }, '⌘O')));
 }
 
 function modelMenu(s) {
-  return h('div', { class: 'menu', style: 'right:0;width:300px' },
+  return h('div', { class: 'menu', role: 'listbox', 'aria-label': 'Model', style: 'right:0;width:300px' },
     MODELS.map(([id, name, ctx, note]) =>
-      h('div', {
-        class: 'item', 'aria-selected': String(s.modelId === id),
-        onclick: () => { dispatch(s.id, 'model', { model: id }); state.menu = null; render(); },
-      },
-        h('span', { class: `radio${s.modelId === id ? ' on' : ''}` }),
+      h('div', pressable({
+        class: 'item', role: 'option', 'aria-selected': String(s.modelId === id),
+        'aria-label': `${name}, ${ctx} context. ${note}`,
+      }, () => { dispatch(s.id, 'model', { model: id }); state.menu = null; render(); }),
+        h('span', { class: `radio${s.modelId === id ? ' on' : ''}`, 'aria-hidden': 'true' }),
         h('div', { style: 'flex-grow:1;min-width:0' },
           h('div', { class: 'nm' }, name), h('div', { class: 'note' }, note)),
         h('span', { style: 'font-family:var(--mono);font-size:10px;color:var(--ft)' }, ctx))),
@@ -527,13 +606,13 @@ function modelMenu(s) {
 }
 
 function effortMenu(s) {
-  return h('div', { class: 'menu', style: 'right:0;width:240px' },
+  return h('div', { class: 'menu', role: 'listbox', 'aria-label': 'Effort', style: 'right:0;width:240px' },
     EFFORTS.map((eff, i) =>
-      h('div', {
-        class: 'item', 'aria-selected': String(s.effort === eff),
-        onclick: () => { dispatch(s.id, 'effort', { effort: eff }); state.menu = null; render(); },
-      },
-        h('span', { class: `radio${s.effort === eff ? ' on' : ''}` }),
+      h('div', pressable({
+        class: 'item', role: 'option', 'aria-selected': String(s.effort === eff),
+        'aria-label': `Effort ${eff}`,
+      }, () => { dispatch(s.id, 'effort', { effort: eff }); state.menu = null; render(); }),
+        h('span', { class: `radio${s.effort === eff ? ' on' : ''}`, 'aria-hidden': 'true' }),
         h('span', { class: 'nm', style: 'flex-grow:1;font-family:var(--mono)' }, eff),
         h('span', { style: 'font-family:var(--mono);font-size:9.5px;color:var(--ft)' }, `⌘${i + 1}`))));
 }
@@ -600,9 +679,10 @@ function composer(s) {
     h('div', { class: 'snips' },
       h('span', { style: 'font-size:10px;color:var(--ft);letter-spacing:.04em' }, 'SNIPPETS'),
       ['continue', 'retry now', 'status?'].map((t) =>
-        h('span', { class: 'snip', onclick: () => dispatch(s.id, 'send', { text: t }) }, t)),
+        h('span', pressable({ class: 'snip', 'aria-label': `Send "${t}"` }, () => dispatch(s.id, 'send', { text: t })), t)),
       h('span', { class: 'grow' }),
-      h('span', { style: 'font-size:10px;color:var(--ft);cursor:pointer', onclick: () => { state.overlay = 'keys'; render(); } }, '⌘/ all shortcuts')));
+      h('span', pressable({ style: 'font-size:10px;color:var(--ft);cursor:pointer', 'aria-label': 'All keyboard shortcuts' },
+        () => openOverlay('keys')), '⌘/ all shortcuts')));
 }
 
 function panel(s) {
@@ -617,7 +697,7 @@ function panel(s) {
     ['Change effort', '⌘E', () => { state.menu = 'effort'; render(); }, !s.reachable],
     ['Compact', '⌘⇧C', () => dispatch(s.id, 'compact', {}), !s.reachable],
     [s.snoozedUntil ? 'Wake' : 'Snooze 4h', '⌘⇧S', () => snoozeSession(s), false],
-    ['Appearance', '⌘,', () => { state.overlay = 'look'; render(); }, false],
+    ['Appearance', '⌘,', () => { openOverlay('look'); }, false],
     ['Open in Claude', '⌘O', () => window.open(`https://claude.ai/code/${s.id}`, '_blank'), false],
   ];
 
@@ -695,23 +775,35 @@ function paletteOverlay() {
   }
 
   return [
-    h('div', { class: 'scrim', onclick: () => { state.overlay = null; render(); } }),
-    h('div', { class: 'palette' },
+    h('div', { class: 'scrim', onclick: () => { closeOverlay(); }, 'aria-hidden': 'true' }),
+    h('div', { class: 'palette', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Command palette' },
       h('div', { class: 'q' },
         svg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>', 'ico'),
         h('input', {
           id: 'palette-input', value: state.paletteQuery, placeholder: 'Sessions, actions, settings…',
+          // Combobox semantics, so arrowing through the list actually announces
+          // the row you land on. Without `aria-activedescendant` the highlight
+          // is a colour and nothing else -- fine to look at, silent to hear.
+          role: 'combobox',
+          'aria-expanded': 'true',
+          'aria-controls': 'palette-results',
+          'aria-autocomplete': 'list',
+          'aria-label': 'Search sessions, actions and settings',
+          'aria-activedescendant': `hit-${state.paletteIndex}`,
+          autocomplete: 'off',
           // render() restores focus and caret by id, so editing mid-string works.
           oninput: (e) => { state.paletteQuery = e.target.value; state.paletteIndex = 0; render(); },
         }),
         h('span', { class: 'k', style: 'font-family:var(--mono);font-size:10px;border:1px solid var(--bd2);border-radius:2px;padding:2px 6px;color:var(--ft)' }, 'esc')),
-      h('div', { class: 'results' },
+      h('div', { class: 'results', id: 'palette-results', role: 'listbox', 'aria-label': 'Results' },
         groups.length
           ? groups.map((g) => [
-              h('div', { class: 'sec' }, h('span', { class: 't' }, g.name), h('span', { class: 'line' })),
+              h('div', { class: 'sec', role: 'presentation' }, h('span', { class: 't' }, g.name), h('span', { class: 'line' })),
               g.rows.map((r) =>
                 h('div', {
-                  class: 'hit', 'aria-selected': String(r.i === state.paletteIndex),
+                  class: 'hit', id: `hit-${r.i}`, role: 'option',
+                  'aria-selected': String(r.i === state.paletteIndex),
+                  'aria-label': `${r.title}. ${r.sub}`,
                   onmouseenter: () => { state.paletteIndex = r.i; render(); },
                   onclick: () => r.run(),
                 },
@@ -762,8 +854,8 @@ const KEYS = [
 
 function keysOverlay() {
   return [
-    h('div', { class: 'scrim', onclick: () => { state.overlay = null; render(); } }),
-    h('div', { class: 'sheet' },
+    h('div', { class: 'scrim', onclick: () => { closeOverlay(); }, 'aria-hidden': 'true' }),
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Keyboard shortcuts' },
       h('h2', {}, 'Every action has a key'),
       h('p', { class: 'lede' },
         'The cockpit is an interface to terminals, so it is keyboard-first. esc stops a turn because that is what esc already does inside Claude Code — Fleet inherits those reflexes rather than inventing new ones. ⌘ is Ctrl on Windows.'),
@@ -800,8 +892,8 @@ function lookOverlay() {
       body);
 
   return [
-    h('div', { class: 'scrim', onclick: () => { state.overlay = null; render(); } }),
-    h('div', { class: 'sheet', style: 'width:820px' },
+    h('div', { class: 'scrim', onclick: () => { closeOverlay(); }, 'aria-hidden': 'true' }),
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Appearance', style: 'width:820px' },
       h('h2', {}, 'Make the terminal yours'),
       h('p', { class: 'lede' }, 'You will stare at this pane more than anything else. Everything changes the preview as you pick it.'),
 
@@ -815,29 +907,29 @@ function lookOverlay() {
 
       group('Text size', '⌘+ ⌘− ⌘0', h('div', { class: 'opts' },
         Object.entries(SIZES).map(([key, px]) =>
-          h('div', { class: 'opt', 'aria-pressed': String(state.look.size === key), onclick: () => setLook({ size: key }) },
+          h('div', pressable({ class: 'opt', 'aria-pressed': String(state.look.size === key) }, () => setLook({ size: key })),
             h('span', { style: `font-family:${stack};font-size:${Math.min(px + 4, 19)}px;font-weight:600;line-height:1` }, 'Aa'),
             h('span', { style: 'font-family:var(--mono);font-size:10.5px' }, `${px}px`))))),
 
       group('Typeface', null, h('div', { class: 'opts' },
         Object.entries(FACES).map(([key, [name, css]]) =>
-          h('div', { class: 'opt', 'aria-pressed': String(state.look.face === key), onclick: () => setLook({ face: key }) },
+          h('div', pressable({ class: 'opt', 'aria-pressed': String(state.look.face === key) }, () => setLook({ face: key })),
             h('span', {}, name),
             h('span', { style: `font-family:${css};font-size:12px;opacity:.8` }, '0O1lI {}'))))),
 
       group('Colours', 'status colours never change', h('div', { class: 'opts' },
         Object.entries(SCHEMES).map(([key, note]) =>
-          h('div', { class: 'opt', 'aria-pressed': String(state.look.scheme === key), onclick: () => setLook({ scheme: key }) },
+          h('div', pressable({ class: 'opt', 'aria-pressed': String(state.look.scheme === key) }, () => setLook({ scheme: key })),
             h('span', {}, key),
             h('span', { style: 'font-size:10.5px;opacity:.8' }, note))))),
 
       group('Line spacing', null, h('div', { class: 'opts' },
         Object.keys(LEADS).map((key) =>
-          h('div', { class: 'opt', 'aria-pressed': String(state.look.lead === key), onclick: () => setLook({ lead: key }) }, key)))),
+          h('div', pressable({ class: 'opt', 'aria-pressed': String(state.look.lead === key) }, () => setLook({ lead: key })), key)))),
 
       group('Theme', null, h('div', { class: 'opts' },
         ['system', 'light', 'dark'].map((t) =>
-          h('div', { class: 'opt', 'aria-pressed': String(state.look.theme === t), onclick: () => setLook({ theme: t }) }, t)))),
+          h('div', pressable({ class: 'opt', 'aria-pressed': String(state.look.theme === t) }, () => setLook({ theme: t })), t)))),
 
       h('div', { style: 'padding:13px 14px;background:var(--s1);border:1px solid var(--bd);border-radius:3px' },
         h('div', { style: 'font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ft);margin-bottom:8px' },

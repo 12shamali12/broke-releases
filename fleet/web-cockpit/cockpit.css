@@ -406,9 +406,31 @@ kbd.hot { color: var(--ac); background: var(--acf); border-color: var(--acb); }
 }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
+/* ---- keyboard ----
+   This cockpit's premise is that nothing needs the mouse, which only holds if
+   you can see where you are. The ring is inset on rows and options so it does
+   not get clipped by the rail's own overflow. */
+:focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; border-radius: 2px; }
+:focus:not(:focus-visible) { outline: none; }
+.row:focus-visible, .opt:focus-visible, .hit:focus-visible, .rail-search:focus-visible {
+  outline-offset: -2px;
+}
+.row[role="option"], .opt[role="button"], .rail-search[role="button"] { cursor: pointer; }
+
+/* Present to a screen reader, absent to the eye. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: .001ms !important; animation-iteration-count: 1 !important;
+    animation-duration: .001ms !important; animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
   }
+  /* The shimmer is the one case where stopping it leaves a misleading result:
+     a static gradient reads as content. Flatten it to a plain ground. */
+  .skel { animation: none !important; background: var(--s2) !important; }
 }

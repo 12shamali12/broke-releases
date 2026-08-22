@@ -16,6 +16,7 @@ const LS = {
   outbox: 'fleet.outbox',
   settings: 'fleet.settings',
   cursor: 'fleet.cursor',
+  drafts: 'fleet.drafts',
 };
 
 /** localStorage throws in some private modes; never let that break the app. */
@@ -50,9 +51,18 @@ const state = {
   fleetAt: null,
   events: [],
   outbox: store.get(LS.outbox, []),
+  // Half-typed messages, per session. Persisted because iOS discards a
+  // backgrounded PWA without warning, and losing what you typed to a
+  // notification you tapped away to read is the same failure as losing a send.
+  drafts: store.get(LS.drafts, {}),
   settings: store.get(LS.settings, { theme: 'system', lane: 'blocked' }),
   view: 'board',
   selected: null,
+  query: '',
+  /** Ids already drawn on the board — anything absent gets the entrance. */
+  seen: new Set(),
+  /** Ids that just transitioned into blocked; each pulses exactly once. */
+  fresh: new Set(),
   online: navigator.onLine,
   connected: false,
   error: null,
@@ -135,6 +145,10 @@ function connect() {
       state.events.unshift(event);
       state.events = state.events.slice(0, 200);
       if (e.lastEventId) store.set(LS.cursor, Number(e.lastEventId));
+      // The pulse belongs to the transition, not to the state: a session that
+      // has been blocked for an hour must not throb every time anything else
+      // happens. So it is armed here, on the event, and disarmed on render.
+      if (event.type === 'session.blocked' && event.sessionId) state.fresh.add(event.sessionId);
       if (event.severity === 'push') toast(event.needsAction ?? event.error ?? event.title);
       render();
     });
@@ -216,8 +230,36 @@ const h = (tag, attrs = {}, ...children) => {
 
 const icon = (d) =>
   h('span', {
+    'aria-hidden': 'true',
     html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`,
   });
+
+/**
+ * Every lane dot in this app is marked `aria-hidden`, and the lane is stated
+ * in words nearby instead: a status you can only perceive as a colour is a
+ * status a colour-blind person does not have.
+ */
+const LANE_WORD = { blocked: 'Blocked', ready: 'Ready', working: 'Working', completed: 'Done' };
+
+/**
+ * Make a non-button element behave like one for a keyboard and a screen
+ * reader. A card that only responds to a tap is a card a switch-control or
+ * keyboard user cannot open at all.
+ */
+function pressable(attrs, onActivate) {
+  return {
+    ...attrs,
+    role: 'button',
+    tabindex: '0',
+    onclick: onActivate,
+    onkeydown: (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      onActivate(e);
+    },
+  };
+}
+
 
 function ago(ms) {
   if (ms == null) return '—';
@@ -228,6 +270,14 @@ function ago(ms) {
   const hr = Math.round(m / 60);
   if (hr < 48) return `${hr}h`;
   return `${Math.round(hr / 24)}d`;
+}
+
+/** Debounced so a fast typist does not hit localStorage on every keystroke. */
+function saveDraft(sessionId, value) {
+  if (value) state.drafts[sessionId] = value;
+  else delete state.drafts[sessionId];
+  clearTimeout(saveDraft.timer);
+  saveDraft.timer = setTimeout(() => store.set(LS.drafts, state.drafts), 400);
 }
 
 function toast(text) {
@@ -262,7 +312,8 @@ function go(view, selected = null) {
 // ---------------------------------------------------------------- views
 
 function viewPair() {
-  const code = h('input', { inputmode: 'numeric', maxlength: '6', placeholder: '000000',
+  const code = h('input', { id: 'code', inputmode: 'numeric', maxlength: '6', placeholder: '000000',
+    autocomplete: 'one-time-code', 'aria-label': 'Six-digit pairing code',
     style: 'font-family:var(--mono);font-size:22px;letter-spacing:.3em;text-align:center' });
 
   return h('div', { class: 'scroll', style: 'padding-top:24px' },
@@ -296,23 +347,40 @@ function sessionCard(s) {
   const need = s.summary?.needsAction;
   const pct = s.contextMax ? Math.min(100, Math.round(((s.contextUsed ?? 0) / s.contextMax) * 100)) : 0;
 
-  return h('div', { class: `card ${s.lane}${s.reachable ? '' : ' dead'}`, onclick: () => go('session', s.id) },
+  // One sentence that carries everything the card shows visually, so the card
+  // reads as a card rather than as eleven loose fragments.
+  const spoken = [
+    LANE_WORD[s.lane] ?? s.lane,
+    s.title,
+    need ? `needs you: ${need}` : s.summary?.detail ?? 'no status reported',
+    `idle ${ago(s.staleFor)}`,
+    s.reachable ? null : 'unreachable',
+    s.snoozedUntil ? `alerts muted for ${ago(s.snoozedUntil - Date.now())}` : null,
+  ].filter(Boolean).join(', ');
+
+  const entrance = state.seen.has(s.id) ? '' : ' enter';
+  const pulse = state.fresh.has(s.id) ? ' fresh' : '';
+
+  return h('div', pressable({
+    class: `card ${s.lane}${s.reachable ? '' : ' dead'}${entrance}${pulse}`,
+    'aria-label': `Open ${s.title}. ${spoken}`,
+  }, () => go('session', s.id)),
     h('div', { class: 'card-head' },
       h('span', { class: `dot ${s.lane === 'blocked' ? 'ac' : s.lane === 'ready' ? 'ok' : s.lane === 'working' ? 'wk' : 'ft'}`,
-        style: 'margin-top:5px' }),
+        style: 'margin-top:5px', 'aria-hidden': 'true' }),
       h('div', { style: 'flex-grow:1;min-width:0' },
         h('div', { class: 'card-title' }, s.title),
         h('div', { class: 'card-sub' }, [s.repo, s.branch].filter(Boolean).join(' · ') || 'no repo')),
-      h('span', { class: `age${s.staleFor > 86_400_000 ? ' hot' : ''}` },
+      h('span', { class: `age${s.staleFor > 86_400_000 ? ' hot' : ''}`, 'aria-hidden': 'true' },
         s.snoozedUntil ? `⌁${ago(s.snoozedUntil - Date.now())}` : ago(s.staleFor))),
 
     need
-      ? h('div', { class: 'need' },
+      ? h('div', { class: 'need', 'aria-hidden': 'true' },
           h('div', { class: 'label' }, s.staleFor > 86_400_000 ? `Stalled ${ago(s.staleFor)}` : 'Needs you'),
           h('div', { class: 'body' }, need))
-      : h('div', { class: 'detail' }, s.summary?.detail ?? 'No status reported.'),
+      : h('div', { class: 'detail', 'aria-hidden': 'true' }, s.summary?.detail ?? 'No status reported.'),
 
-    h('div', { class: 'facts' },
+    h('div', { class: 'facts', 'aria-hidden': 'true' },
       h('span', {}, s.modelId?.replace('claude-', '') ?? '—'),
       h('span', {}, '·'),
       h('span', {}, s.effort ?? '—'),
@@ -335,9 +403,9 @@ function viewBoard() {
       h('h1', {}, 'Fleet'),
       h('span', { class: 'grow' }),
       stale
-        ? h('span', { class: 'pill warn' }, h('span', { class: 'dot ac' }), 'offline')
-        : h('span', { class: 'pill' }, h('span', { class: 'dot ok' }), 'live'),
-      h('button', { class: 'icon', style: 'min-height:38px;height:38px', onclick: () => go('spawn') },
+        ? h('span', { class: 'pill warn', role: 'status' }, h('span', { class: 'dot ac', 'aria-hidden': 'true' }), 'offline')
+        : h('span', { class: 'pill', role: 'status' }, h('span', { class: 'dot ok', 'aria-hidden': 'true' }), 'live'),
+      h('button', { class: 'icon', style: 'min-height:38px;height:38px', 'aria-label': 'Start a session', onclick: () => go('spawn') },
         icon('<path d="M12 5v14M5 12h14"/>'))),
     h('div', { class: 'sub' },
       h('span', {}, `${fleet.counts.active} active · ${ago(age)} ago`),
@@ -350,12 +418,13 @@ function viewBoard() {
         h('p', {}, 'Your laptop cannot be reached, so sessions may have moved on since.'))
     : null;
 
-  const tabs = h('div', { class: 'tabs' }, LANES.map((l) => {
+  const tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Filter by lane' }, LANES.map((l) => {
     const n = l.key === 'all' ? active.length : active.filter((s) => s.lane === l.key).length;
     return h('button', {
       class: 'tab', role: 'tab', 'aria-selected': String(lane === l.key),
+      'aria-label': `${l.label}, ${n} session${n === 1 ? '' : 's'}`,
       onclick: () => { state.settings.lane = l.key; store.set(LS.settings, state.settings); render(); },
-    }, l.key === 'all' ? null : h('span', { class: `dot ${l.key === 'blocked' ? 'ac' : l.key === 'ready' ? 'ok' : 'wk'}` }),
+    }, l.key === 'all' ? null : h('span', { class: `dot ${l.key === 'blocked' ? 'ac' : l.key === 'ready' ? 'ok' : 'wk'}`, 'aria-hidden': 'true' }),
        h('span', {}, l.label), h('span', { class: 'n' }, String(n)));
   }));
 
@@ -383,12 +452,23 @@ function viewSession() {
   const s = state.fleet?.sessions.find((x) => x.id === state.selected);
   if (!s) return h('div', { class: 'empty' }, h('p', {}, 'That session is gone.'));
 
-  const text = h('textarea', { placeholder: 'Message this session…' });
+  const text = h('textarea', {
+    id: 'compose',
+    placeholder: 'Message this session…',
+    'aria-label': `Message ${s.title}`,
+    oninput: () => saveDraft(s.id, text.value),
+  });
+  text.value = state.drafts[s.id] ?? '';
+
   const send = async () => {
     const value = text.value.trim();
     if (!value) return;
+    // Clear only after the send is accepted or durably held — `dispatch`
+    // throws on a rejection, and clearing first would delete what you wrote in
+    // order to report that it failed.
     await dispatch(s.id, 'send', { text: value }, s.title);
     text.value = '';
+    saveDraft(s.id, '');
   };
 
   const quick = (label, payload, verb = 'send') =>
@@ -399,14 +479,17 @@ function viewSession() {
   return [
     h('div', { class: 'head' },
       h('div', { class: 'head-row' },
-        h('button', { class: 'icon', style: 'min-height:38px;height:38px', onclick: () => go('board') },
+        h('button', { class: 'icon', style: 'min-height:38px;height:38px', 'aria-label': 'Back to the board', onclick: () => go('board') },
           icon('<path d="M15 18l-6-6 6-6"/>')),
         h('span', { class: 'grow' })),
       h('div', { class: 'head-row', style: 'margin-top:10px;align-items:flex-start' },
-        h('span', { class: `dot ${s.lane === 'blocked' ? 'ac' : s.lane === 'ready' ? 'ok' : 'wk'}`, style: 'margin-top:8px' }),
+        h('span', { class: `dot ${s.lane === 'blocked' ? 'ac' : s.lane === 'ready' ? 'ok' : 'wk'}`, style: 'margin-top:8px', 'aria-hidden': 'true' }),
         h('div', {},
           h('h1', { style: 'font-size:20px' }, s.title),
-          h('div', { class: 'sub' }, [s.repo, s.branch, s.envKind].filter(Boolean).join(' · '))))),
+          h('div', { class: 'sub' },
+            // The lane is stated here, not only shown as a dot: the colour is
+            // the fast path, the word is the one everyone has.
+            [LANE_WORD[s.lane] ?? s.lane, s.repo, s.branch, s.envKind].filter(Boolean).join(' · '))))),
 
     h('div', { class: 'scroll' },
       s.summary?.needsAction
@@ -425,7 +508,9 @@ function viewSession() {
         h('div', { style: 'display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px;color:var(--dm)' },
           h('span', {}, 'Context'),
           h('span', { style: 'font-family:var(--mono)' }, `${pct}%`)),
-        h('div', { class: `meter${pct >= 70 ? ' hot' : ''}` }, h('i', { style: `width:${pct}%` }))),
+        // The percentage is already stated above, so the bar itself is
+        // decorative here — announcing it twice is noise, not access.
+        h('div', { class: `meter${pct >= 70 ? ' hot' : ''}`, 'aria-hidden': 'true' }, h('i', { style: `width:${pct}%` }))),
 
       h('div', { class: 'row', style: 'margin:0 0 14px' },
         h('div', { class: 'listrow', style: 'flex-grow:1;margin:0' },
@@ -476,7 +561,7 @@ function viewSpawn() {
   return [
     h('div', { class: 'head' },
       h('div', { class: 'head-row' },
-        h('button', { class: 'icon', style: 'min-height:38px;height:38px', onclick: () => go('board') },
+        h('button', { class: 'icon', style: 'min-height:38px;height:38px', 'aria-label': 'Back to the board', onclick: () => go('board') },
           icon('<path d="M18 6L6 18M6 6l12 12"/>')),
         h('h1', { style: 'font-size:19px' }, 'New session'))),
     h('div', { class: 'scroll' },
@@ -529,27 +614,38 @@ function describe(e) {
 }
 
 function viewSearch() {
-  const input = h('input', { placeholder: 'Search sessions…', type: 'search' });
-  const results = h('div', {});
+  // The id is load-bearing: without it a push event arriving mid-search
+  // re-renders the view and takes the caret out of the field.
+  const input = h('input', { id: 'q', placeholder: 'Search sessions…', type: 'search', 'aria-label': 'Search sessions' });
+  input.value = state.query ?? '';
+
+  // Results arrive after the keystroke that asked for them, so they have to
+  // announce themselves — otherwise a screen reader user types into silence.
+  const results = h('div', { role: 'region', 'aria-live': 'polite', 'aria-label': 'Search results' });
 
   const run = async () => {
     const q = input.value.trim();
+    state.query = q;
     results.replaceChildren();
     if (!q) return;
     try {
       const body = await api(`/v1/search?q=${encodeURIComponent(q)}`);
+      const n = body.matches.length;
       results.append(
-        ...(body.matches.length ? body.matches.map(sessionCard) : [h('p', { class: 'detail' }, 'Nothing matched.')]),
+        h('p', { class: 'detail', style: 'margin:0 0 10px' }, n ? `${n} match${n === 1 ? '' : 'es'}` : 'Nothing matched.'),
+        ...body.matches.map(sessionCard),
         h('p', { class: 'detail', style: 'margin-top:14px;font-size:11.5px' }, body.note),
       );
     } catch {
       results.append(h('p', { class: 'detail' }, 'Search needs your laptop to be reachable.'));
     }
   };
+  // Re-run on re-render so results are not silently blanked by an event.
+  if (state.query) queueMicrotask(run);
   input.addEventListener('input', () => { clearTimeout(run.t); run.t = setTimeout(run, 220); });
 
   return [
-    h('div', { class: 'head' }, h('div', { class: 'field', style: 'margin:0' }, input)),
+    h('div', { class: 'head' }, h('h1', { class: 'sr-only' }, 'Search'), h('div', { class: 'field', style: 'margin:0' }, input)),
     h('div', { class: 'scroll' }, results),
   ];
 }
@@ -569,7 +665,7 @@ function viewSettings() {
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Connection'), h('span', { class: 'line' })),
       h('div', { class: 'card' },
         h('div', { style: 'display:flex;align-items:center;gap:10px' },
-          h('span', { class: `dot ${state.connected ? 'ok' : 'ac'}` }),
+          h('span', { class: `dot ${state.connected ? 'ok' : 'ac'}`, 'aria-hidden': 'true' }),
           h('div', { style: 'flex-grow:1' },
             h('div', { class: 'card-title' }, state.connected ? 'fleetd is reachable' : 'fleetd is unreachable'),
             h('div', { class: 'card-sub' }, health ? `adapter ${health.adapter}` : 'no health yet')))),
@@ -672,6 +768,41 @@ function applyTheme() {
   else document.documentElement.setAttribute('data-theme', theme);
 }
 
+/**
+ * Re-render without stealing what someone is doing.
+ *
+ * `replaceChildren` destroys the focused element, so a push event arriving
+ * while you type takes the caret with it — and on a phone that event is
+ * usually the very thing you are replying to. Capture by id, restore after.
+ */
+function preserveFocus(work, { keepScroll = true } = {}) {
+  const active = document.activeElement;
+  const id = active?.id;
+  const isField = active && ('selectionStart' in active);
+  const start = isField ? active.selectionStart : null;
+  const end = isField ? active.selectionEnd : null;
+  // Only worth keeping within one screen: a new screen starts at the top.
+  const scroll = keepScroll ? (document.querySelector('.scroll')?.scrollTop ?? null) : null;
+
+  work();
+
+  if (scroll != null) {
+    const next = document.querySelector('.scroll');
+    if (next) next.scrollTop = scroll;
+  }
+  if (!id) return;
+  const restored = document.getElementById(id);
+  if (!restored) return;
+  restored.focus({ preventScroll: true });
+  if (start != null && 'setSelectionRange' in restored) {
+    try {
+      restored.setSelectionRange(start, end);
+    } catch {
+      /* not a text-selectable input any more; focus alone is enough */
+    }
+  }
+}
+
 function render() {
   const app = document.getElementById('app');
   const body = !state.token
@@ -686,7 +817,34 @@ function render() {
           icon(t.d), h('span', {}, t.label))))
     : null;
 
-  app.replaceChildren(...[body].flat().filter(Boolean), ...(nav ? [nav] : []));
+  const key = `${state.view}:${state.selected ?? ''}`;
+  const changed = render.lastKey !== key;
+
+  preserveFocus(() => {
+    app.replaceChildren(...[body].flat().filter(Boolean), ...(nav ? [nav] : []));
+  }, { keepScroll: !changed });
+
+  // Both cues are one-shot. Disarming after the DOM exists means the animation
+  // has already been handed to the compositor; disarming before would mean it
+  // never plays at all.
+  for (const el of app.querySelectorAll('.card.enter, .card.fresh')) {
+    // reading offsetHeight is enough to commit the animation start
+    void el.offsetHeight;
+  }
+  state.fresh.clear();
+  for (const session of state.fleet?.sessions ?? []) state.seen.add(session.id);
+
+  // Moving between screens must announce itself. Without this a screen reader
+  // stays on whatever it was reading and the person has no idea the view
+  // changed under them.
+  if (changed) {
+    render.lastKey = key;
+    const heading = app.querySelector('h1, h2');
+    if (heading && !document.activeElement?.id) {
+      heading.setAttribute('tabindex', '-1');
+      heading.focus({ preventScroll: true });
+    }
+  }
 }
 
 // ---------------------------------------------------------------- boot
