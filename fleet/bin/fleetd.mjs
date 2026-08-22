@@ -21,6 +21,7 @@ import { DeviceStore } from '../src/http/auth.js';
 import { PushService } from '../src/push/index.js';
 import { MediaController } from '../src/media.js';
 import { Metrics } from '../src/metrics.js';
+import { NotificationService } from '../src/notify/index.js';
 import { SnoozeStore } from '../src/snooze.js';
 import { createFleetServer } from '../src/http/server.js';
 
@@ -99,11 +100,14 @@ metrics.attach(poller);
 // fsync per poll, and anything lost is at most one interval of counters.
 const metricsTimer = setInterval(() => metrics.persist().catch(() => {}), 60_000);
 metricsTimer.unref();
-const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, metrics, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
 
-// Quiet hours mute everything except a blocked session, which is the one
-// thing worth waking someone for.
-push.attach(poller, { quietHours: { from: 23, to: 8 }, gate: (event) => snooze.allows(event) });
+// The notification layer owns the poller wiring: it adds escalation,
+// coalescing and a hard ceiling, none of which PushService can express because
+// it has no memory between events. Declared before the server, which needs it
+// to serve the action route a notification's buttons call.
+const notify = new NotificationService({ push, queue, snooze, metrics }).attach(poller);
+
+const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, metrics, notify, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
 
 poller.on('event', (e) => {
   if (e.severity !== 'push' || !snooze.allows(e)) return;
@@ -150,6 +154,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     // reports failing — exactly the silence this project exists to prevent. The
     // poller is already stopped, so nothing new can start here.
     if (push.pending) console.log(`${C.dim}waiting on ${push.pending} push(es)…${C.off}`);
+    notify.stop();
     await push.drain();
     // The numbers are only useful if they survive the restart.
     await metrics.persist();

@@ -303,6 +303,42 @@ switch (command) {
     break;
   }
 
+  case 'alerts': {
+    const n = await api('/v1/notify/settings');
+    const hour = (x) => `${String(x).padStart(2, '0')}:00`;
+
+    if (rest[0] === 'escalate') {
+      const on = rest[1] !== 'off';
+      await api('/v1/notify/settings', { method: 'PUT', body: JSON.stringify({ escalate: on }) });
+      console.log(`${C.dim}escalation ${on ? 'on' : 'off'}${C.off}`);
+      break;
+    }
+    if (rest[0] === 'quiet') {
+      const body = rest[1] === 'off'
+        ? { quietHours: null }
+        : { quietHours: { from: Number(rest[1] ?? 23), to: Number(rest[2] ?? 8) } };
+      const updated = await api('/v1/notify/settings', { method: 'PUT', body: JSON.stringify(body) });
+      console.log(`${C.dim}quiet hours ${updated.quietHours ? `${hour(updated.quietHours.from)}–${hour(updated.quietHours.to)}` : 'off'}${C.off}`);
+      break;
+    }
+
+    console.log(`\n${C.b}How Fleet tells you${C.off}`);
+    console.log(`  ${C.dim}escalate    ${C.off}${n.escalate ? `${C.ok}on${C.off}` : 'off'}` +
+      `${n.escalate ? `${C.dim} — again after ${ago(n.escalateAfterMs)}, then once more, then never${C.off}` : ''}`);
+    console.log(`  ${C.dim}quiet hours ${C.off}${n.quietHours ? `${hour(n.quietHours.from)}–${hour(n.quietHours.to)}${C.dim} — only a blocked session still buzzes${C.off}` : 'off'}`);
+    console.log(`  ${C.dim}ceiling     ${n.maxPerHour}/hour · ${n.coalesceThreshold}+ at once arrive as one${C.off}`);
+
+    if (n.escalating?.length) {
+      console.log(`\n${C.ac}Escalating now${C.off}`);
+      for (const e of n.escalating) {
+        const when = e.nextAt ? `next in ${ago(e.nextAt - Date.now())}` : 'done nagging';
+        console.log(`  ${C.ac}●${C.off} ${(e.title ?? e.sessionId.slice(0, 22)).padEnd(28)} ${C.dim}alert ${e.attempt} · ${when}${C.off}`);
+      }
+    }
+    console.log('');
+    break;
+  }
+
   case 'media':
   case 'play':
   case 'pause':
@@ -389,6 +425,9 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet media                 what is playing on the laptop
   fleet play|pause|next|prev  drive it
   fleet stats [days]          is this actually helping? (default 7)
+  fleet alerts                how Fleet tells you, and what is escalating
+  fleet alerts escalate off   one alert per blocked session, no follow-ups
+  fleet alerts quiet 23 8     quiet hours, or: fleet alerts quiet off
   fleet queue                 the command queue
   fleet watch                 live tail of transitions
   fleet pair <code>           once, against a running fleetd

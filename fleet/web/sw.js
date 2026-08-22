@@ -1,13 +1,20 @@
 /**
  * Service worker: makes Fleet installable, keeps the shell available offline,
- * and turns a push into a notification.
+ * and turns a push into something you can act on without unlocking anything.
  *
  * The shell is cached; API responses are not. A stale board is fine when it is
  * labelled as stale — a stale board served silently from a cache is not, so
  * /v1/* is always network-only and the app decides what to show when it fails.
+ *
+ * The action buttons here are the reason the notification is worth having. A
+ * notification that can only be opened is a notification that costs you a
+ * context switch to dismiss; one that can snooze or reply in place is one you
+ * can actually clear at 3am. They work using the short-lived, single-session
+ * token the push payload carries — never the device token, which opens every
+ * route and has no business in a background worker.
  */
 
-const SHELL = 'fleet-shell-v1';
+const SHELL = 'fleet-shell-v2';
 const FILES = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {
@@ -39,6 +46,16 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+/** The one call this worker can make, using the notification's own token. */
+function act(token, action, body = {}) {
+  if (!token) return Promise.resolve(null);
+  return fetch('/v1/notify/action', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token, action, ...body }),
+  }).catch(() => null);
+}
+
 self.addEventListener('push', (event) => {
   let payload = {};
   try {
@@ -46,24 +63,82 @@ self.addEventListener('push', (event) => {
   } catch {
     payload = { title: 'Fleet', body: event.data?.text() ?? '' };
   }
-  event.waitUntil(
-    self.registration.showNotification(payload.title ?? 'Fleet', {
-      body: payload.body ?? '',
-      tag: payload.sessionId ?? 'fleet',
-      renotify: true,
-      data: { sessionId: payload.sessionId ?? null },
-      actions: [
-        { action: 'open', title: 'Open' },
+
+  const single = Boolean(payload.sessionId);
+
+  // Inline reply is Android/Chrome only. Elsewhere it renders as a plain
+  // button and `event.reply` is undefined, which is handled below by opening
+  // the app rather than sending an empty message.
+  const actions = single
+    ? [
+        { action: 'reply', type: 'text', title: 'Reply', placeholder: 'Message this session…' },
         { action: 'snooze', title: 'Snooze 4h' },
-      ],
-    }),
+      ]
+    : [{ action: 'open', title: 'Open Fleet' }];
+
+  const shown = self.registration.showNotification(payload.title ?? 'Fleet', {
+    body: payload.body ?? '',
+    // One notification per session: an escalation replaces the original rather
+    // than stacking three copies of the same news on the lock screen.
+    tag: payload.sessionId ?? (payload.digest ? 'fleet-digest' : 'fleet'),
+    renotify: true,
+    // An escalation is the case where a silent replace would defeat the point.
+    silent: false,
+    requireInteraction: Boolean(payload.undeliverable),
+    timestamp: payload.at ?? Date.now(),
+    data: {
+      sessionId: payload.sessionId ?? null,
+      digest: payload.digest ?? null,
+      token: payload.token ?? null,
+    },
+    actions,
+  });
+
+  event.waitUntil(
+    Promise.all([
+      shown,
+      // Tell fleetd it actually arrived. Everything else in the system can only
+      // observe that a push was accepted by the push service, which is not the
+      // same as it reaching a phone — and the gap between those two is exactly
+      // where a missed alert hides.
+      act(payload.token, 'receipt'),
+      badge(payload.badge),
+    ]),
   );
 });
 
+/** The count on the app icon. Wrong is worse than absent, so it is cleared. */
+function badge(count) {
+  if (!('setAppBadge' in self.navigator)) return Promise.resolve();
+  try {
+    return count > 0 ? self.navigator.setAppBadge(count) : self.navigator.clearAppBadge();
+  } catch {
+    return Promise.resolve();
+  }
+}
+
 self.addEventListener('notificationclick', (event) => {
+  const { sessionId, token } = event.notification.data ?? {};
   event.notification.close();
-  const id = event.notification.data?.sessionId;
-  const target = id ? `/?session=${encodeURIComponent(id)}` : '/';
+
+  // Snooze without opening anything. This is the whole point of the button:
+  // acting on the alert must not cost you a context switch.
+  if (event.action === 'snooze') {
+    event.waitUntil(act(token, 'snooze', { hours: 4 }));
+    return;
+  }
+
+  if (event.action === 'reply') {
+    const text = (event.reply ?? '').trim();
+    // No inline-reply support on this platform, or an empty reply: fall
+    // through to opening the session rather than sending nothing.
+    if (text) {
+      event.waitUntil(act(token, 'reply', { text }));
+      return;
+    }
+  }
+
+  const target = sessionId ? `/?session=${encodeURIComponent(sessionId)}` : '/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {
@@ -72,4 +147,21 @@ self.addEventListener('notificationclick', (event) => {
       return self.clients.openWindow(target);
     }),
   );
+});
+
+/**
+ * Dismissing an alert is a decision, and it should be honoured.
+ *
+ * Swiping it away means "not now". Without this, the escalation fires again in
+ * fifteen minutes for something you have consciously set aside — which is how
+ * a person ends up muting the app.
+ */
+self.addEventListener('notificationclose', (event) => {
+  const { token } = event.notification.data ?? {};
+  if (token) event.waitUntil(act(token, 'snooze', { hours: 1, reason: 'dismissed' }));
+});
+
+/** The app keeps the badge honest while it is open. */
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'badge') badge(event.data.count);
 });

@@ -61,6 +61,12 @@ export class Metrics {
     pushSent: 0,
     pushFailed: 0,
     pushDropped: 0,
+    // Reported by the service worker when it actually shows a notification.
+    // `pushSent` only means a push service accepted it, which is not the same
+    // as it reaching a phone — and the gap between the two is exactly where a
+    // missed alert hides.
+    pushDelivered: 0,
+    pushEscalated: 0,
     pollOk: 0,
     pollFailed: 0,
   };
@@ -308,6 +314,11 @@ export class Metrics {
         commandFailureRate: this.#counters.commandsQueued
           ? this.#counters.commandsFailed / this.#counters.commandsQueued
           : 0,
+        // Below 1 means notifications are being sent that never reach a phone
+        // — a silent failure that looks identical to "nothing happened".
+        pushDeliveryRate: this.#counters.pushSent
+          ? Math.min(1, this.#counters.pushDelivered / this.#counters.pushSent)
+          : null,
       },
     };
   }

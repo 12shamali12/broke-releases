@@ -103,7 +103,7 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
+export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, notify = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
@@ -170,6 +170,31 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
       }
     }
 
+    /**
+     * Notification actions, authenticated by the notification itself.
+     *
+     * Deliberately above the device gate: a service worker firing this has no
+     * device token, and giving it one would put a credential that opens every
+     * route into a background context. The notification's own token is scoped
+     * to one session, a handful of verbs and an hour — so this route is not a
+     * hole in the gate, it is a much smaller door beside it.
+     */
+    if (method === 'POST' && path === '/v1/notify/action') {
+      if (!notify) throw new HttpError(503, 'notifications are not configured');
+      const body = await readJson(req);
+      const grant = notify.tokens.verify(body.token, String(body.action ?? ''));
+      // Deliberately identical for a bad token, an unknown verb and an expired
+      // one: distinguishing them tells a guesser which half they got right.
+      if (!grant) throw new HttpError(403, 'this notification can no longer act');
+
+      try {
+        const result = await notify.act(grant, body);
+        return send(res, 200, result);
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+    }
+
     // --- everything below needs a device ---
 
     const device = devices.verify(bearerFrom(req));
@@ -205,6 +230,7 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
         const body = await readJson(req);
         try {
           const result = await snooze.snooze(sessionId, body.hours ?? 4);
+          notify?.acknowledge(sessionId);
           return send(res, 200, {
             ...result,
             note: 'alerts muted; the session stays on the board, and an undeliverable command still notifies',
@@ -215,6 +241,26 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
       }
       if (method === 'DELETE') {
         return send(res, 200, { woken: await snooze.wake(sessionId) });
+      }
+    }
+
+    // --- notification settings ---
+
+    if (path === '/v1/notify/settings') {
+      if (!notify) throw new HttpError(503, 'notifications are not configured');
+      if (method === 'GET') {
+        return send(res, 200, {
+          ...notify.policy.config,
+          escalating: notify.policy.pendingEscalations,
+        });
+      }
+      if (method === 'PUT' || method === 'POST') {
+        const body = await readJson(req);
+        try {
+          return send(res, 200, notify.configure(body));
+        } catch (err) {
+          throw new HttpError(400, err.message);
+        }
       }
     }
 
@@ -366,6 +412,10 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
         // Acting on a session is the acknowledgement, and the moment you acted
         // is now — not when the laptop eventually delivers it.
         metrics?.queued(sessionId);
+        // And it stops the escalation, whichever client you acted from. An
+        // alert that keeps firing after you have dealt with something is what
+        // makes people mute the app — taking the next real alert with it.
+        notify?.acknowledge(sessionId);
 
         // Accepted, not done: it is queued, and the client is told whether it
         // is going anywhere soon. Pretending otherwise is how a message ends

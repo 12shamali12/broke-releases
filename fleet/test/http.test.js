@@ -13,13 +13,15 @@ import { DeviceStore, hashToken, tokensMatch } from '../src/http/auth.js';
 import { EventLog, frame } from '../src/http/events.js';
 import { createFleetServer, matchSessions, validateCommand } from '../src/http/server.js';
 import { Metrics } from '../src/metrics.js';
+import { NotificationService } from '../src/notify/index.js';
+import { SnoozeStore } from '../src/snooze.js';
 
 const FIXTURE = fileURLToPath(new URL('../fixtures/fleet-series.json', import.meta.url));
 const SNAPSHOTS = JSON.parse(await readFile(FIXTURE, 'utf8'));
 const SESSION_ID = 'session_01FIXTUREaaaaaaaaaaaaaaaa';
 const UNREACHABLE_ID = 'session_01FIXTUREbbbbbbbbbbbbbbbb';
 
-async function harness({ snapshots = SNAPSHOTS, metrics = null } = {}) {
+async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'fleet-http-'));
   const queue = await CommandQueue.open({ path: join(dir, 'commands.json') });
   const devices = await DeviceStore.open({ path: join(dir, 'devices.json') });
@@ -34,7 +36,11 @@ async function harness({ snapshots = SNAPSHOTS, metrics = null } = {}) {
   };
 
   const poller = new Poller({ adapter, queue });
-  const { server, log, hub } = createFleetServer({ poller, queue, devices, metrics });
+  const snoozeStore = withNotify ? new SnoozeStore({}) : null;
+  const notify = withNotify
+    ? new NotificationService({ push: null, queue, snooze: snoozeStore, metrics })
+    : null;
+  const { server, log, hub } = createFleetServer({ poller, queue, devices, metrics, notify, snooze: snoozeStore });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -56,7 +62,7 @@ async function harness({ snapshots = SNAPSHOTS, metrics = null } = {}) {
     });
 
   return {
-    base, call, poller, queue, devices, log, hub, metrics, token: paired.token,
+    base, call, poller, queue, devices, log, hub, metrics, notify, snoozeStore, token: paired.token,
     cleanup: async () => {
       hub.close();
       await new Promise((r) => server.close(r));
@@ -433,6 +439,188 @@ test('a nonsense window falls back to the default rather than erroring', async (
       const report = await h.call(`/v1/metrics${q}`).then((r) => r.json());
       assert.equal(report.windowMs, 7 * 24 * 60 * 60 * 1000, `for ${q || '(none)'}`);
     }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+
+// ------------------------------------------------------- notification actions
+
+/** The service worker has no device token — that is the entire point. */
+const anon = (base, body) =>
+  fetch(`${base}/v1/notify/action`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+test('a notification acts without a device token', async () => {
+  // If this needed the device token, a background worker would have to hold a
+  // credential that opens every route in the API.
+  const h = await harness({ withNotify: true });
+  try {
+    await h.poller.tick();
+    const token = h.notify.tokens.mint(SESSION_ID);
+
+    const res = await anon(h.base, { token, action: 'reply', text: 'the endpoint is https://x' });
+    assert.equal(res.status, 200);
+
+    const body = await res.json();
+    // Never "sent" — from a lock screen it matters even more that this does
+    // not claim more than it did.
+    assert.equal(body.state, 'pending');
+    assert.equal(h.queue.pendingFor(SESSION_ID).length, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a notification cannot act on a session it was not about', async () => {
+  // The session comes from the token, never from the request body.
+  const h = await harness({ withNotify: true });
+  try {
+    await h.poller.tick();
+    const token = h.notify.tokens.mint(SESSION_ID);
+
+    await anon(h.base, { token, action: 'reply', text: 'hello', sessionId: UNREACHABLE_ID });
+    assert.equal(h.queue.pendingFor(UNREACHABLE_ID).length, 0, 'the body must not be able to redirect it');
+    assert.equal(h.queue.pendingFor(SESSION_ID).length, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a forged or expired token is refused, and says nothing useful', async () => {
+  const h = await harness({ withNotify: true });
+  try {
+    for (const token of ['', 'guess', null, 'a'.repeat(32)]) {
+      const res = await anon(h.base, { token, action: 'snooze' });
+      assert.equal(res.status, 403);
+      const body = await res.json();
+      // Identical for a bad token, an unknown verb and an expired one:
+      // distinguishing them tells a guesser which half they got right.
+      assert.equal(body.error, 'this notification can no longer act');
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a notification cannot do what notifications are not allowed to do', async () => {
+  const h = await harness({ withNotify: true });
+  try {
+    await h.poller.tick();
+    const token = h.notify.tokens.mint(SESSION_ID);
+    for (const action of ['archive', 'revoke', 'model', '../../send']) {
+      const res = await anon(h.base, { token, action });
+      assert.equal(res.status, 403, `${action} must not be reachable`);
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('snoozing from the lock screen works and stops the escalation', async () => {
+  const h = await harness({ withNotify: true });
+  try {
+    await h.poller.tick();
+    h.notify.policy.offer({
+      type: 'session.blocked', severity: 'push', sessionId: SESSION_ID, title: 'A', needsAction: 'x',
+    });
+    assert.equal(h.notify.policy.pendingEscalations.length, 1);
+
+    const token = h.notify.tokens.mint(SESSION_ID);
+    const res = await anon(h.base, { token, action: 'snooze', hours: 4 });
+    assert.equal(res.status, 200);
+
+    assert.equal(h.snoozeStore.isSnoozed(SESSION_ID), true);
+    assert.deepEqual(h.notify.policy.pendingEscalations, [], 'you dealt with it');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a receipt records that a push actually reached a phone', async () => {
+  // Everything else can only observe that a push service accepted a message.
+  const metrics = new Metrics({ now: () => 0 });
+  const h = await harness({ withNotify: true, metrics });
+  try {
+    const token = h.notify.tokens.mint(null); // a digest is about no one session
+    const res = await anon(h.base, { token, action: 'receipt' });
+    assert.equal(res.status, 200);
+    assert.equal(h.metrics.report().delivery.pushDelivered, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a digest token cannot act on a session, only report a receipt', async () => {
+  const h = await harness({ withNotify: true });
+  try {
+    await h.poller.tick();
+    const token = h.notify.tokens.mint(null);
+    const res = await anon(h.base, { token, action: 'reply', text: 'hi' });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /not about one session/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('an empty reply is refused rather than sent as an empty message', async () => {
+  const h = await harness({ withNotify: true });
+  try {
+    await h.poller.tick();
+    const token = h.notify.tokens.mint(SESSION_ID);
+    const res = await anon(h.base, { token, action: 'reply', text: '   ' });
+    assert.equal(res.status, 400);
+    assert.equal(h.queue.pendingFor(SESSION_ID).length, 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('settings reject values that would silently mute everything', async () => {
+  const h = await harness({ withNotify: true });
+  try {
+    for (const bad of [
+      { quietHours: { from: 'yes', to: 8 } },
+      { quietHours: { from: -1, to: 8 } },
+      { quietHours: { from: 0, to: 24 } },
+      { escalateAfterMs: 5 },
+      { maxAlertsPerEpisode: 0 },
+    ]) {
+      const res = await h.call('/v1/notify/settings', { method: 'PUT', body: JSON.stringify(bad) });
+      assert.equal(res.status, 400, JSON.stringify(bad));
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('the hourly ceiling can be lowered but not raised out of reason', async () => {
+  // It is the guarantee that a bug cannot buzz all night, and a guarantee you
+  // can set to a million is not one.
+  const h = await harness({ withNotify: true });
+  try {
+    const low = await h.call('/v1/notify/settings', { method: 'PUT', body: JSON.stringify({ maxPerHour: 3 }) })
+      .then((r) => r.json());
+    assert.equal(low.maxPerHour, 3);
+
+    const high = await h.call('/v1/notify/settings', { method: 'PUT', body: JSON.stringify({ maxPerHour: 100000 }) })
+      .then((r) => r.json());
+    assert.equal(high.maxPerHour, 60);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('settings need a device token; actions do not', async () => {
+  const h = await harness({ withNotify: true });
+  try {
+    const res = await fetch(`${h.base}/v1/notify/settings`);
+    assert.equal(res.status, 401, 'reading configuration is not something a notification may do');
   } finally {
     await h.cleanup();
   }

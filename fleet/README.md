@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 191 tests, no network, no CLI, no credentials
+npm test                        # 233 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -56,6 +56,9 @@ GET    /v1/push/key                  the VAPID public key
 POST   /v1/push/subscribe            {endpoint, keys}
 DELETE /v1/push/subscribe            {endpoint}
 POST   /v1/push/test                 a real notification, end to end
+POST   /v1/notify/action             {token, action} — the notification's buttons
+GET    /v1/notify/settings           the rules, and what is escalating
+PUT    /v1/notify/settings           change them
 GET    /v1/metrics?windowMs=          is this actually helping?
 GET    /v1/media                     what is playing on the laptop, or why not
 POST   /v1/media/:verb               play-pause | next | previous | volume-up/down
@@ -141,6 +144,9 @@ src/http/mcp.js         the MCP face: JSON-RPC, ten tools, same auth
 src/snooze.js           per-session alert mute, expiring, never hiding
 src/media.js            the transport: playerctl on Linux, AppleScript on macOS
 src/metrics.js          time to acknowledge, in percentiles, including open episodes
+src/notify/policy.js    escalation, coalescing, quiet hours, the hourly ceiling
+src/notify/tokens.js    what a notification is allowed to do, and for how long
+src/notify/index.js     the assembly: policy + tokens + push + queue + snooze
 src/atomic.js           write-then-rename, unique per write, shared by all four stores
 src/push/crypto.js      RFC 8291 + 8188 + 8292, from the specs, no deps
 src/push/index.js       subscriptions, delivery, quiet hours
@@ -218,6 +224,56 @@ It **expires** rather than toggling off — 4 hours by default, 72 at most —
 because an indefinite mute is how a session goes quiet forever. And
 `command.failed` is never suppressed: snooze is a statement about a session's
 own noise, not permission to lose a message you asked to send.
+
+## Notifications are a system, not a push
+
+One push is not a notification system. The failure Fleet exists to catch
+survives a single push perfectly well: it arrives at 3am, you swipe it away
+half asleep, and nothing mentions it again for eleven days.
+
+**Escalation.** A blocked session you have not acted on is mentioned again
+after 15 minutes, then once more an hour later, then never. Three is where a
+person has either dealt with it or decided not to; a fourth is what makes
+someone mute the app — which would take the next real alert with it. Acting on
+the session by *any* route stops it: a tap on the notification, a message from
+the cockpit, `fleet send`, or the session unblocking on its own.
+
+**Coalescing.** Three or more sessions blocking at once arrive as one
+notification. Two arrive as themselves, together, because at that size detail
+is worth more than brevity. An undeliverable command is never batched — that
+is the one alert that must not be delayed.
+
+**A ceiling.** At most 12 an hour, whatever happens. Everything above is
+judgement; this is the guarantee that a bug in here cannot buzz your phone all
+night. It can be lowered freely and raised only to 60, because a guarantee you
+can set to a million is not one.
+
+### Acting from the lock screen
+
+The notification carries **Reply** (inline, where the platform supports it) and
+**Snooze 4h**, and both work without opening the app. Dismissing it is treated
+as "not now" — a one-hour snooze — because otherwise the escalation fires again
+in fifteen minutes for something you consciously set aside.
+
+That needs credentials in a service worker, and the obvious approach — stash
+the device token where the worker can read it — is worse than it looks: that
+token opens every route, sends to any session, and revokes other devices.
+Instead each notification carries **its own token**: one session, a handful of
+verbs, one hour, never written to disk. If it leaks, the worst it can do is
+what the notification could already do, to the session it was already about.
+`POST /v1/notify/action` is the only route above the device gate, and that is
+why.
+
+The session comes from the token, never from the request body — there is a test
+for exactly that.
+
+### Delivery, actually measured
+
+The service worker reports a receipt when it *shows* a notification. Everything
+else in the system can only observe that a push service accepted a message,
+which is not the same as it reaching a phone — and the gap between those two is
+precisely where a missed alert hides. `pushDeliveryRate` below 1 means alerts
+are being sent that nobody ever saw.
 
 ## Does this actually help?
 
@@ -301,3 +357,4 @@ first is a design change; the second is real work. Undecided — see
 - [x] 06 MCP face — ten tools over JSON-RPC
 - [x] 07 Snooze, media transport, accessibility pass on both clients
 - [x] 08 Metrics — does this actually help?
+- [x] 09 Notifications — escalation, coalescing, lock-screen actions, receipts

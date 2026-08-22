@@ -61,6 +61,7 @@ const state = {
   query: '',
   /** Ids already drawn on the board — anything absent gets the entrance. */
   metrics: null,
+  notify: null,
   seen: new Set(),
   /** Ids that just transitioned into blocked; each pulses exactly once. */
   fresh: new Set(),
@@ -315,7 +316,12 @@ function go(view, selected = null) {
 
 async function refreshMetrics() {
   try {
-    state.metrics = await api('/v1/metrics');
+    const [metrics, notify] = await Promise.all([
+      api('/v1/metrics'),
+      api('/v1/notify/settings').catch(() => null),
+    ]);
+    state.metrics = metrics;
+    if (notify) state.notify = notify;
     render();
   } catch {
     // Leave whatever was there. A stale number is more use than a blank card.
@@ -681,6 +687,75 @@ function viewSearch() {
  * exists to catch is a long tail: thirty-nine sessions answered in a minute
  * and one forgotten for eleven days averages out to something that looks fine.
  */
+/**
+ * The rules a notification obeys, and the ability to change them.
+ *
+ * Shown rather than buried in a config file because these are the settings a
+ * person actually forms an opinion about at 3am, and a notification system you
+ * cannot tune is one you eventually turn off entirely.
+ */
+function notifyRules() {
+  const n = state.notify;
+  if (!n) return null;
+
+  const hour = (h) => `${String(h).padStart(2, '0')}:00`;
+  const set = async (patch) => {
+    try {
+      state.notify = await api('/v1/notify/settings', { method: 'PUT', body: JSON.stringify(patch) });
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+
+  const row = (label, detail, control) =>
+    h('div', { class: 'listrow', style: 'align-items:flex-start;gap:10px' },
+      h('div', { style: 'flex-grow:1;min-width:0' },
+        h('div', { class: 'k', style: 'color:var(--tx)' }, label),
+        h('div', { class: 'card-sub', style: 'margin-top:3px;white-space:normal' }, detail)),
+      control);
+
+  const toggle = (on, onclick, label) =>
+    h('button', {
+      class: 'chip', 'aria-pressed': String(on), 'aria-label': label,
+      style: 'flex-grow:0;min-width:52px', onclick,
+    }, on ? 'on' : 'off');
+
+  return h('div', { style: 'margin-top:12px' },
+    row('Escalate',
+      n.escalate
+        ? `If you do not act, it tells you again after ${ago(n.escalateAfterMs)}, then once more. Three alerts, then it stops.`
+        : 'One alert per blocked session, however long it waits.',
+      toggle(n.escalate, () => set({ escalate: !n.escalate }), 'Escalate unanswered alerts')),
+
+    row('Quiet hours',
+      n.quietHours
+        ? `${hour(n.quietHours.from)}–${hour(n.quietHours.to)}. A blocked session still buzzes; nothing else does.`
+        : 'Off — anything worth a push arrives whenever it happens.',
+      toggle(Boolean(n.quietHours), () => set({ quietHours: n.quietHours ? null : { from: 23, to: 8 } }), 'Quiet hours')),
+
+    n.quietHours
+      ? h('div', { class: 'chips', role: 'group', 'aria-label': 'Quiet hours start', style: 'margin-top:8px' },
+          [21, 22, 23, 0, 1].map((from) =>
+            h('button', {
+              id: `quiet-${from}`, class: 'chip',
+              'aria-pressed': String(n.quietHours.from === from),
+              onclick: () => set({ quietHours: { ...n.quietHours, from } }),
+            }, hour(from))))
+      : null,
+
+    n.escalating?.length
+      ? h('div', { class: 'banner', style: 'margin:12px 0 0' },
+          h('h3', {}, `${n.escalating.length} alert${n.escalating.length === 1 ? '' : 's'} still escalating`),
+          h('p', {}, n.escalating.map((e) => e.title ?? e.sessionId.slice(0, 18)).join(', ') +
+            ' — acting on any of these, from anywhere, stops it.'))
+      : null,
+
+    h('p', { class: 'detail', style: 'margin-top:10px;font-size:11.5px' },
+      `At most ${n.maxPerHour} notifications an hour, whatever happens. ` +
+      `${n.coalesceThreshold} or more at once arrive as one.`));
+}
+
 function statsCard() {
   const m = state.metrics;
   if (!m) return h('div', { class: 'card' }, h('div', { class: 'detail' }, 'Loading…'));
@@ -752,7 +827,8 @@ function viewSettings() {
           state.settings.push ? 'Re-subscribe this device' : 'Enable push notifications'),
         state.settings.push ? h('button', { style: 'flex-grow:0', onclick: testPush }, 'Test') : null),
       h('p', { class: 'detail', style: 'margin-top:8px;font-size:11.5px' },
-        'Blocked sessions, 24-hour stalls and undelivered commands. Nothing else. Quiet hours 23:00–08:00, where only a blocked session still buzzes. On iOS, add Fleet to your home screen first — Apple gates push behind that.'),
+        'Blocked sessions, 24-hour stalls and undelivered commands. Nothing else. On iOS, add Fleet to your home screen first — Apple gates push behind that.'),
+      notifyRules(),
 
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Appearance'), h('span', { class: 'line' })),
       themeRow,
@@ -879,7 +955,30 @@ function preserveFocus(work, { keepScroll = true } = {}) {
   }
 }
 
+/**
+ * The count on the app icon.
+ *
+ * The only part of Fleet that reaches you without opening anything and without
+ * buzzing — which makes it the right place for "how many need you", a number
+ * that is useful constantly and urgent almost never.
+ */
+function updateBadge() {
+  const n = (state.fleet?.sessions ?? []).filter((s) => s.actionable).length;
+  if (updateBadge.last === n) return;
+  updateBadge.last = n;
+  try {
+    if ('setAppBadge' in navigator) {
+      if (n > 0) navigator.setAppBadge(n);
+      else navigator.clearAppBadge();
+    }
+    navigator.serviceWorker?.controller?.postMessage({ type: 'badge', count: n });
+  } catch {
+    // Unsupported, or blocked. A missing badge is not worth breaking a render.
+  }
+}
+
 function render() {
+  updateBadge();
   const app = document.getElementById('app');
   const body = !state.token
     ? [viewPair()]
@@ -930,6 +1029,24 @@ function render() {
 // ---------------------------------------------------------------- boot
 
 applyTheme();
+
+/**
+ * A notification that opens the board has half-worked.
+ *
+ * The service worker navigates to `/?session=…`; without reading it here, you
+ * tap an alert about one specific session and arrive at a list, which is the
+ * exact context switch the notification was supposed to save you.
+ */
+function openDeepLink() {
+  const wanted = new URL(location.href).searchParams.get('session');
+  if (!wanted) return;
+  state.view = 'session';
+  state.selected = wanted;
+  // Clean the URL so a refresh does not re-open it after you navigated away.
+  history.replaceState(null, '', location.pathname);
+}
+
+openDeepLink();
 render();
 
 if (state.token) {

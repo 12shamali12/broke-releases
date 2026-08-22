@@ -33,6 +33,7 @@ const state = {
   drafts: {},               // per-session composer text, survives re-render
   media: null,              // null until probed; then { available, playing, … }
   metrics: null,            // fetched when the stats sheet opens
+  notify: null,             // notification rules, fetched with the stats sheet
 };
 
 // ---------------------------------------------------------------- api
@@ -423,7 +424,12 @@ function openOverlay(name) {
 
 async function refreshMetrics() {
   try {
-    state.metrics = await api('/v1/metrics');
+    const [metrics, notify] = await Promise.all([
+      api('/v1/metrics'),
+      api('/v1/notify/settings').catch(() => null),
+    ]);
+    state.metrics = metrics;
+    if (notify) state.notify = notify;
     render();
   } catch {
     // A stale number is more use than a blank sheet.
@@ -1002,6 +1008,50 @@ function keysOverlay() {
  * catch is a long tail — thirty-nine sessions answered in a minute and one
  * forgotten for eleven days averages out to something that looks fine.
  */
+/**
+ * The rules a notification obeys.
+ *
+ * A notification system you cannot tune is one you eventually turn off
+ * entirely, and turning it off takes the alert that mattered with it.
+ */
+function notifyRules() {
+  const n = state.notify;
+  if (!n) return null;
+
+  const set = async (patch) => {
+    try {
+      state.notify = await api('/v1/notify/settings', { method: 'PUT', body: JSON.stringify(patch) });
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  const hour = (x) => `${String(x).padStart(2, '0')}:00`;
+
+  const opt = (on, label, onclick, aria) =>
+    h('div', pressable({ class: 'opt', 'aria-pressed': String(on), 'aria-label': aria }, onclick), label);
+
+  return h('div', { style: 'margin-bottom:18px' },
+    h('div', { style: 'font-size:9.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--ft);margin-bottom:9px' },
+      'How it tells you'),
+    h('div', { class: 'opts' },
+      opt(n.escalate, n.escalate ? `escalates after ${ago(n.escalateAfterMs)}` : 'one alert only',
+        () => set({ escalate: !n.escalate }), 'Escalate unanswered alerts'),
+      opt(Boolean(n.quietHours),
+        n.quietHours ? `quiet ${hour(n.quietHours.from)}–${hour(n.quietHours.to)}` : 'no quiet hours',
+        () => set({ quietHours: n.quietHours ? null : { from: 23, to: 8 } }), 'Quiet hours')),
+    h('div', { style: 'font-size:11.5px;color:var(--dm);margin-top:9px;line-height:1.55' },
+      n.escalate
+        ? `A blocked session you do not act on is mentioned again after ${ago(n.escalateAfterMs)}, then once more, then never. Three is where a person either deals with it or has decided not to — a fourth is what makes someone mute the app.`
+        : 'Each blocked session raises exactly one alert, however long it then waits.'),
+    n.escalating?.length
+      ? h('div', { style: 'font-size:11.5px;color:var(--ac);margin-top:7px' },
+          `Escalating now: ${n.escalating.map((e) => e.title ?? e.sessionId.slice(0, 16)).join(', ')}`)
+      : null,
+    h('div', { style: 'font-size:11.5px;color:var(--ft);margin-top:7px' },
+      `Never more than ${n.maxPerHour} an hour, whatever goes wrong. ${n.coalesceThreshold} or more at once arrive as one.`));
+}
+
 function statsOverlay() {
   const m = state.metrics;
   const t = m?.timeToAcknowledge;
@@ -1047,6 +1097,8 @@ function statsOverlay() {
                           : null,
                         h('span', { style: 'font-family:var(--mono);font-size:11px;color:var(--ac)' }, ago(w.waitingMs)))))
                 : null,
+
+              notifyRules(),
 
               h('div', { style: 'padding:13px 14px;background:var(--s1);border:1px solid var(--bd);border-radius:3px' },
                 h('div', { style: 'font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ft);margin-bottom:8px' }, 'Delivery'),
