@@ -10,6 +10,7 @@ import { createServer } from 'node:http';
 import { bearerFrom } from './auth.js';
 import { EventLog, StreamHub } from './events.js';
 import { createStaticHandler } from './static.js';
+import { createMcpHandler, handleBatch } from './mcp.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const VERBS = new Set(['send', 'model', 'effort', 'compact', 'rename']);
@@ -106,6 +107,7 @@ export function createFleetServer({ poller, queue, devices, log = new EventLog()
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
   const serveCockpit = cockpitRoot ? createStaticHandler({ root: cockpitRoot }) : null;
+  const mcp = createMcpHandler({ poller, queue });
 
   // Everything the poller emits becomes a log entry, which the hub fans out.
   poller.on('event', (event) => log.append(event));
@@ -169,6 +171,20 @@ export function createFleetServer({ poller, queue, devices, log = new EventLog()
     const device = devices.verify(bearerFrom(req));
     if (!device) throw new HttpError(401, 'device token required');
     devices.touch(device).catch(() => {});
+
+    // MCP: one POST, JSON-RPC in, JSON-RPC out. Same token as everything else,
+    // so registering fleetd as a claude.ai connector grants no extra reach.
+    if (path === '/mcp') {
+      if (method !== 'POST') throw new HttpError(405, 'MCP expects POST');
+      const payload = await readJson(req);
+      const reply = await handleBatch(mcp, payload, { origin: `mcp:${device.label ?? device.id}` });
+      if (!reply) {
+        res.writeHead(202, { 'content-length': 0 });
+        res.end();
+        return undefined;
+      }
+      return send(res, 200, reply);
+    }
 
     if (method === 'GET' && path === '/v1/fleet') {
       return send(res, 200, withHealth(requireFleet()));

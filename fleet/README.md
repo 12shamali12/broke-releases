@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 73 tests, no network, no CLI, no credentials
+npm test                        # 94 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -48,7 +48,27 @@ POST   /v1/commands/:id/retry
 DELETE /v1/commands/:id
 GET    /v1/devices
 DELETE /v1/devices/:id               revoke one phone, nothing else
+POST   /mcp                          JSON-RPC 2.0 — the MCP face
 ```
+
+## The MCP face
+
+`POST /mcp` speaks JSON-RPC 2.0 with nine tools: `fleet_list`, `fleet_get`,
+`fleet_send`, `fleet_stop`, `fleet_set_model`, `fleet_set_effort`,
+`fleet_compact`, `fleet_rename`, `fleet_search`.
+
+This is the highest-leverage endpoint in the design. A published artifact page
+cannot call fleetd — a strict CSP blocks it — but it *can* call the viewer's
+claude.ai connectors. Registering fleetd as one closes that gap: any Claude
+conversation can answer "what's stuck?" and act on it, with no phone in the loop.
+
+It grants no extra reach: the same device token gates it, and every write goes
+through the same durable queue, so ordering and the never-silent guarantee hold
+identically whether a command came from a tap or a conversation.
+
+Every write tool's description says **QUEUED** in as many words, and every write
+result repeats it. A model that reports "I changed the model" when the command
+is still in a queue is the exact failure this system exists to prevent.
 
 Writes return **202, not 200** — the command is queued, and the response says
 whether the session is reachable. Reporting a queued command as done is exactly
@@ -107,6 +127,7 @@ src/http/auth.js        per-device tokens, stored hashed
 src/http/events.js      the event log and the SSE hub
 src/http/server.js      routing, validation, auth gate
 src/http/static.js      serves the app; traversal is contained, not guessed at
+src/http/mcp.js         the MCP face: JSON-RPC, nine tools, same auth
 web/                    the PWA: six screens, offline cache, outbox, push
 web-cockpit/            the desktop cockpit: rail, transcript, palette, keys
 fixtures/               synthetic snapshots — see "Fixtures" below
@@ -156,4 +177,4 @@ first is a design change; the second is real work. Undecided — see
 - [x] 03 HTTP + SSE + device auth — **tunnel and Access still to wire up**
 - [x] 04 The PWA — **Web Push still needs VAPID keys and a subscription store**
 - [x] 05 The cockpit — keyboard-first, command palette, appearance
-- [ ] 06 MCP face
+- [x] 06 MCP face — nine tools over JSON-RPC
