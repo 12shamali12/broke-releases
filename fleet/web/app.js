@@ -421,6 +421,9 @@ function viewBoard() {
   const tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Filter by lane' }, LANES.map((l) => {
     const n = l.key === 'all' ? active.length : active.filter((s) => s.lane === l.key).length;
     return h('button', {
+      // The id is what lets focus come back after the re-render this click
+      // causes. Without it, switching lanes by keyboard drops you on the body.
+      id: `tab-${l.key}`,
       class: 'tab', role: 'tab', 'aria-selected': String(lane === l.key),
       'aria-label': `${l.label}, ${n} session${n === 1 ? '' : 's'}`,
       onclick: () => { state.settings.lane = l.key; store.set(LS.settings, state.settings); render(); },
@@ -472,7 +475,10 @@ function viewSession() {
   };
 
   const quick = (label, payload, verb = 'send') =>
-    h('button', { class: 'chip', onclick: () => dispatch(s.id, verb, payload, s.title) }, label);
+    h('button', {
+      id: `quick-${label}`, class: 'chip', disabled: !s.reachable,
+      onclick: () => dispatch(s.id, verb, payload, s.title),
+    }, label);
 
   const pct = s.contextMax ? Math.min(100, Math.round(((s.contextUsed ?? 0) / s.contextMax) * 100)) : 0;
 
@@ -519,10 +525,12 @@ function viewSession() {
           h('span', { class: 'k' }, 'Effort'), h('span', { class: 'v' }, s.effort ?? '—'))),
 
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Effort'), h('span', { class: 'line' })),
-      h('div', { class: 'chips' },
+      h('div', { class: 'chips', role: 'group', 'aria-label': 'Reasoning effort' },
         ['low', 'medium', 'high', 'xhigh', 'max'].map((e) =>
           h('button', {
+            id: `effort-${e}`,
             class: 'chip', 'aria-pressed': String(s.effort === e), disabled: !s.reachable,
+            title: s.reachable ? null : 'This session cannot be reached right now',
             onclick: () => dispatch(s.id, 'effort', { effort: e }, s.title),
           }, e))),
 
@@ -530,7 +538,7 @@ function viewSession() {
       h('div', { class: 'term' }, s.summary?.detail ?? 'Nothing reported yet.'),
 
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Quick reply'), h('span', { class: 'line' })),
-      h('div', { class: 'chips' },
+      h('div', { class: 'chips', role: 'group', 'aria-label': 'Quick reply' },
         quick('continue', { text: 'continue' }),
         quick('retry', { text: 'retry now' }),
         quick('compact', {}, 'compact')),
@@ -538,7 +546,10 @@ function viewSession() {
       h('div', { class: 'field', style: 'margin-top:14px' }, text),
       h('div', { class: 'row', style: 'margin-top:0' },
         h('button', {
-          class: 'quiet', style: 'flex-grow:0',
+          id: 'snooze', class: 'quiet', style: 'flex-grow:0',
+          'aria-label': s.snoozedUntil
+            ? `Turn alerts back on for ${s.title}`
+            : `Mute alerts for ${s.title} for four hours. It stays on the board.`,
           onclick: async () => {
             const path = `/v1/fleet/${encodeURIComponent(s.id)}/snooze`;
             try {
@@ -548,8 +559,8 @@ function viewSession() {
             } catch (err) { toast(err.message); }
           },
         }, s.snoozedUntil ? 'Wake' : 'Snooze'),
-        h('button', { class: 'primary', disabled: !s.reachable, onclick: send }, 'Send'),
-        h('button', { class: 'quiet', style: 'flex-grow:0', onclick: () => window.open(`https://claude.ai/code/${s.id}`, '_blank') }, 'Open in Claude'))),
+        h('button', { id: 'send', class: 'primary', disabled: !s.reachable, onclick: send }, 'Send'),
+        h('button', { id: 'open-claude', class: 'quiet', style: 'flex-grow:0', onclick: () => window.open(`https://claude.ai/code/${s.id}`, '_blank') }, 'Open in Claude'))),
   ];
 }
 
@@ -652,9 +663,10 @@ function viewSearch() {
 
 function viewSettings() {
   const health = state.fleet?.health;
-  const themeRow = h('div', { class: 'chips' },
+  const themeRow = h('div', { class: 'chips', role: 'group', 'aria-label': 'Theme' },
     ['system', 'light', 'dark'].map((t) =>
       h('button', {
+        id: `theme-${t}`,
         class: 'chip', 'aria-pressed': String(state.settings.theme === t),
         onclick: () => { state.settings.theme = t; store.set(LS.settings, state.settings); applyTheme(); render(); },
       }, t)));
@@ -837,13 +849,17 @@ function render() {
   // Moving between screens must announce itself. Without this a screen reader
   // stays on whatever it was reading and the person has no idea the view
   // changed under them.
-  if (changed) {
+  // Not on the first paint: moving focus to a heading before the person has
+  // done anything is disorienting, and on iOS it can scroll the page.
+  if (changed && render.lastKey !== undefined) {
     render.lastKey = key;
     const heading = app.querySelector('h1, h2');
     if (heading && !document.activeElement?.id) {
       heading.setAttribute('tabindex', '-1');
       heading.focus({ preventScroll: true });
     }
+  } else if (changed) {
+    render.lastKey = key;
   }
 }
 

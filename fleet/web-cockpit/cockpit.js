@@ -299,8 +299,10 @@ function onKey(e) {
   if (state.overlay && e.key === 'Tab') {
     const box = document.querySelector('.palette, .sheet, [role="dialog"]');
     if (box) {
+      // getClientRects rather than offsetParent: the overlays are
+      // position:fixed, and offsetParent is null for a fixed element itself.
       const stops = [...box.querySelectorAll('a[href], button, input, textarea, select, [tabindex]')]
-        .filter((el) => !el.disabled && el.getAttribute('tabindex') !== '-1' && el.offsetParent !== null);
+        .filter((el) => !el.disabled && el.getAttribute('tabindex') !== '-1' && el.getClientRects().length);
       if (stops.length) {
         const first = stops[0];
         const last = stops[stops.length - 1];
