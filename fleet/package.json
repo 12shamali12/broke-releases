@@ -8,12 +8,15 @@
     "node": ">=22"
   },
   "bin": {
+    "fleet": "./bin/fleet.mjs",
+    "fleetd": "./bin/fleetd.mjs",
     "fleet-spike": "./bin/spike.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
     "spike": "node bin/spike.mjs",
-    "demo": "node bin/demo.mjs"
+    "demo": "node bin/demo.mjs",
+    "start": "node bin/fleetd.mjs"
   },
   "dependencies": {}
 }

@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 112 tests, no network, no CLI, no credentials
+npm test                        # 122 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -22,6 +22,7 @@ with no build step, no framework and no dependency:
 |---|---|---|
 | **phone** | `http://127.0.0.1:8787/` | a PWA — triage, six screens, offline cache, outbox |
 | **cockpit** | `http://127.0.0.1:8787/cockpit` | desktop, keyboard-first — rail, transcript, controls |
+| **CLI** | `node bin/fleet.mjs` | the desk, in ten seconds — board, send, stop, watch |
 
 The tunnel that reaches the API reaches both.
 
@@ -134,6 +135,8 @@ src/http/static.js      serves the app; traversal is contained, not guessed at
 src/http/mcp.js         the MCP face: JSON-RPC, nine tools, same auth
 src/push/crypto.js      RFC 8291 + 8188 + 8292, from the specs, no deps
 src/push/index.js       subscriptions, delivery, quiet hours
+src/cli-helpers.js      pure helpers the CLI shares, so they can be tested
+bin/fleet.mjs           the CLI
 web/                    the PWA: six screens, offline cache, outbox, push
 web-cockpit/            the desktop cockpit: rail, transcript, palette, keys
 fixtures/               synthetic snapshots — see "Fixtures" below
