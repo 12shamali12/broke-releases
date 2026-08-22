@@ -14,6 +14,8 @@ import { normalizeFleet } from './model.js';
 import { diffFleet } from './diff.js';
 
 const DEFAULT_INTERVAL_MS = 20_000;
+/** Prune settled commands every N ticks — ~1 hour at the default interval. */
+const PRUNE_EVERY_TICKS = 180;
 /** Consecutive read failures before we stop claiming the board is live. */
 const STALE_AFTER_FAILURES = 3;
 
@@ -21,22 +23,25 @@ export class Poller extends EventEmitter {
   #adapter;
   #queue;
   #intervalMs;
+  #pruneEvery;
   #now;
   #timer = null;
   #running = false;
   #inFlight = false;
 
   #fleet = null;
+  #ticks = 0;
   #lastOkAt = null;
   #failures = 0;
   #lastError = null;
 
-  constructor({ adapter, queue = null, intervalMs = DEFAULT_INTERVAL_MS, now = () => Date.now() }) {
+  constructor({ adapter, queue = null, intervalMs = DEFAULT_INTERVAL_MS, pruneEveryTicks = PRUNE_EVERY_TICKS, now = () => Date.now() }) {
     super();
     if (!adapter) throw new TypeError('Poller needs an adapter');
     this.#adapter = adapter;
     this.#queue = queue;
     this.#intervalMs = intervalMs;
+    this.#pruneEvery = pruneEveryTicks;
     this.#now = now;
   }
 
@@ -89,6 +94,15 @@ export class Poller extends EventEmitter {
     try {
       const events = await this.#read();
       const drained = await this.drainCommands();
+
+      // Without this the queue file grows for the life of the daemon: every
+      // command ever sent stays on disk, and startup gets slower forever.
+      this.#ticks += 1;
+      if (this.#queue && this.#ticks % this.#pruneEvery === 0) {
+        const removed = await this.#queue.prune();
+        if (removed) this.emit('pruned', { removed });
+      }
+
       return { events, drained };
     } finally {
       this.#inFlight = false;

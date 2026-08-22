@@ -157,3 +157,46 @@ test('a sent command records its result', async () => {
     await cleanup();
   }
 });
+
+test('the poller actually prunes, so the queue file cannot grow forever', async () => {
+  const { Poller } = await import('../src/poller.js');
+  const { FixtureAdapter } = await import('../src/adapters/fixture.js');
+  const { readFile } = await import('node:fs/promises');
+  const { fileURLToPath } = await import('node:url');
+
+  const snapshots = JSON.parse(
+    await readFile(fileURLToPath(new URL('../fixtures/fleet-series.json', import.meta.url)), 'utf8'),
+  );
+
+  let clock = 1_000_000;
+  const { queue, cleanup } = await tempQueue({ now: () => clock });
+  try {
+    const reader = new FixtureAdapter({ snapshots });
+    const poller = new Poller({
+      adapter: {
+        name: 'fixture', capabilities: { read: true, write: true },
+        list: () => reader.list(), send: async () => ({ ok: true }), probe: () => reader.probe(),
+      },
+      queue,
+      pruneEveryTicks: 2,
+      now: () => clock,
+    });
+
+    await poller.tick();
+    const { id } = await queue.enqueue({ sessionId: 'session_01FIXTUREaaaaaaaaaaaaaaaa', verb: 'send', payload: { text: 'x' } });
+    await queue.markSending(id);
+    await queue.markSent(id);
+    assert.equal(queue.all.length, 1);
+
+    clock += 8 * 24 * 60 * 60 * 1000;
+
+    const pruned = [];
+    poller.on('pruned', (e) => pruned.push(e));
+    await poller.tick(); // tick 2 — the prune tick
+
+    assert.deepEqual(pruned, [{ removed: 1 }]);
+    assert.equal(queue.all.length, 0, 'without this, every command ever sent stays on disk');
+  } finally {
+    await cleanup();
+  }
+});

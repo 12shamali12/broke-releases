@@ -16,6 +16,8 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 const PAIRING_TTL_MS = 10 * 60_000;
+/** How stale a device's lastSeenAt may get on disk before we write it. */
+const TOUCH_PERSIST_MS = 60_000;
 
 export function hashToken(token) {
   return createHash('sha256').update(token, 'utf8').digest('hex');
@@ -123,9 +125,21 @@ export class DeviceStore {
     return null;
   }
 
+  /**
+   * Record that a device was seen.
+   *
+   * Every authenticated request calls this, so persisting each time would mean
+   * a whole-file write per request — on a 20-second poll with two clients open
+   * that is thousands of pointless writes a day. The in-memory value is always
+   * current; disk only catches up once a minute.
+   */
   async touch(device) {
-    device.lastSeenAt = this.#now();
+    const now = this.#now();
+    const previous = device.lastSeenAt ?? 0;
+    device.lastSeenAt = now;
+    if (now - previous < TOUCH_PERSIST_MS) return false;
     await this.#persist();
+    return true;
   }
 
   async revoke(id) {

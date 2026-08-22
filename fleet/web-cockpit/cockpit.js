@@ -30,6 +30,7 @@ const state = {
   connected: false,
   look: { ...LOOK_DEFAULT, ...store.get(LS.look, {}) },
   changed: new Set(),       // session ids that just transitioned
+  drafts: {},               // per-session composer text, survives re-render
 };
 
 // ---------------------------------------------------------------- api
@@ -292,7 +293,9 @@ function sendComposer() {
   const text = box.value.trim();
   if (!text) return;
   dispatch(s.id, 'send', { text });
+  delete state.drafts[s.id];
   box.value = '';
+  box.style.height = 'auto';
 }
 
 // ---------------------------------------------------------------- palette
@@ -550,8 +553,16 @@ function transcript(s) {
 function composer(s) {
   const box = h('textarea', {
     id: 'composer', rows: '1', placeholder: s.reachable ? `Message ${s.title}…` : 'Queued until this session reconnects…',
-    oninput: (e) => { e.target.style.height = 'auto'; e.target.style.height = `${Math.min(140, e.target.scrollHeight)}px`; },
+    oninput: (e) => {
+      // Held in state, not only in the DOM: a live event can re-render this
+      // pane at any moment, and losing a half-written message to a background
+      // refresh is unforgivable in a tool you leave open all day.
+      state.drafts[s.id] = e.target.value;
+      e.target.style.height = 'auto';
+      e.target.style.height = `${Math.min(140, e.target.scrollHeight)}px`;
+    },
   });
+  box.value = state.drafts[s.id] ?? '';
   return h('div', { class: 'composer' },
     h('div', { class: 'box' },
       h('span', { class: 'prompt' }, '›'), box,
@@ -659,7 +670,8 @@ function paletteOverlay() {
         svg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>', 'ico'),
         h('input', {
           id: 'palette-input', value: state.paletteQuery, placeholder: 'Sessions, actions, settings…',
-          oninput: (e) => { state.paletteQuery = e.target.value; state.paletteIndex = 0; render(); requestAnimationFrame(() => { const el = document.getElementById('palette-input'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }); },
+          // render() restores focus and caret by id, so editing mid-string works.
+          oninput: (e) => { state.paletteQuery = e.target.value; state.paletteIndex = 0; render(); },
         }),
         h('span', { class: 'k', style: 'font-family:var(--mono);font-size:10px;border:1px solid var(--bd2);border-radius:2px;padding:2px 6px;color:var(--ft)' }, 'esc')),
       h('div', { class: 'results' },
@@ -856,9 +868,20 @@ function pairView() {
 
 // ---------------------------------------------------------------- render
 
+/**
+ * Re-render, preserving whatever the person was in the middle of.
+ *
+ * replaceChildren destroys focus and selection, and this app re-renders on
+ * every incoming event. Capturing the focused field's identity and caret and
+ * restoring them afterwards is what makes a live-updating pane usable at all.
+ */
 function render() {
   const app = document.getElementById('app');
   if (!state.token) return app.replaceChildren(pairView());
+
+  const focused = document.activeElement;
+  const focusId = focused && ['INPUT', 'TEXTAREA'].includes(focused.tagName) ? focused.id : null;
+  const caret = focusId ? [focused.selectionStart, focused.selectionEnd] : null;
 
   const s = current();
   const body = state.view === 'wall'
@@ -871,6 +894,14 @@ function render() {
 
   const overlay = { palette: paletteOverlay, keys: keysOverlay, look: lookOverlay }[state.overlay];
   app.replaceChildren(topBar(), body, ...(overlay ? overlay() : []));
+
+  if (focusId) {
+    const restored = document.getElementById(focusId);
+    if (restored) {
+      restored.focus();
+      if (caret && restored.setSelectionRange) restored.setSelectionRange(caret[0], caret[1]);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- boot
@@ -889,4 +920,9 @@ if (state.token) {
   refresh().catch(() => render());
   connect();
 }
-setInterval(() => { if (!state.overlay) render(); }, 30_000);
+// Only refresh relative timestamps when nobody is mid-interaction. The caret
+// restore above makes this safe, but not interrupting at all is better still.
+setInterval(() => {
+  const busy = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
+  if (!state.overlay && !state.menu && !busy) render();
+}, 30_000);

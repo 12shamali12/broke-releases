@@ -346,3 +346,23 @@ test('the cockpit prefix owns its 404s', async () => {
     await h.cleanup();
   }
 });
+
+test('touching a device does not write to disk on every request', async () => {
+  let clock = 1_000_000;
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-touch-'));
+  try {
+    const store = await DeviceStore.open({ path: join(dir, 'devices.json'), now: () => clock });
+    const { code } = store.openPairing();
+    const token = await store.pair(code, 'phone');
+    const device = store.verify(token);
+
+    assert.equal(await store.touch(device), true, 'first sighting is written');
+    assert.equal(await store.touch(device), false, 'a second within the minute is not');
+    assert.equal(device.lastSeenAt, clock, 'but memory is still current');
+
+    clock += 61_000;
+    assert.equal(await store.touch(device), true, 'and disk catches up once a minute');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
