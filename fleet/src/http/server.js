@@ -9,6 +9,7 @@
 import { createServer } from 'node:http';
 import { bearerFrom } from './auth.js';
 import { EventLog, StreamHub } from './events.js';
+import { createStaticHandler } from './static.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const VERBS = new Set(['send', 'model', 'effort', 'compact', 'rename']);
@@ -100,8 +101,10 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, log = new EventLog(), hub = null }) {
+export function createFleetServer({ poller, queue, devices, log = new EventLog(), hub = null, webRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
+  // The app shell loads before a token exists — the pairing screen needs it.
+  const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
 
   // Everything the poller emits becomes a log entry, which the hub fans out.
   poller.on('event', (event) => log.append(event));
@@ -130,6 +133,10 @@ export function createFleetServer({ poller, queue, devices, log = new EventLog()
     const segments = path.split('/').filter(Boolean); // ['v1','fleet',':id','send']
 
     // --- unauthenticated ---
+
+    if (serveStatic && !path.startsWith('/v1/')) {
+      if (await serveStatic(req, res, path)) return undefined;
+    }
 
     if (method === 'GET' && path === '/v1/health') {
       const device = devices.verify(bearerFrom(req));

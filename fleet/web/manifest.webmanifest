@@ -1,0 +1,14 @@
+{
+  "name": "Fleet",
+  "short_name": "Fleet",
+  "description": "One console for every Claude Code session.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a1917",
+  "theme_color": "#1a1917",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
