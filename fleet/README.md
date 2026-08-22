@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 352 tests, no network, no CLI, no credentials
+npm test                        # 358 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs doctor       # can this machine run Fleet? no daemon needed
@@ -175,6 +175,14 @@ tokens and no network call:
 Together those give title, status, lane, model, branch, repository, idle time
 and context usage — the whole board except `needs_action`.
 
+It also reads **sessions whose process has exited**. `claude agents --json`
+lists only what is running, and a session you closed the terminal on is
+invisible to it — which is precisely the session this product exists to
+surface. Those appear `unreachable`, which the board already renders dimmed
+with a reason and for which a command is held rather than failed. Bounded by
+age and by count, both applied from `mtime` before any file is opened, so poll
+cost does not grow with your history.
+
 Three decisions in that adapter are worth stating:
 
 - **Only the tail of a transcript is read.** These files reach megabytes — one
@@ -188,10 +196,23 @@ Three decisions in that adapter are worth stating:
 - **The repository is the git remote**, read from `.git/config` rather than by
   shelling out, so `repo:owner/name` means the same thing on every machine. A
   local path would group nothing.
+- **One session in two project directories is one session.** Changing working
+  directory gives a session a transcript under each slug; without deduplicating
+  on the newest, it appears twice with two plausible states and no way to tell
+  which is current.
 
 The honest limit: **strategy D only sees this machine.** A cloud session started
 from a phone is invisible to it, which is why its `capabilities.scope` says
 `local` and why both the spike and fleetd say so out loud at startup.
+
+Remote Control sessions *are* local processes — they run on your machine and are
+exposed to the web — so those do appear. Only true cloud sessions are missing.
+
+I looked for a documented way to list cloud sessions from a laptop and did not
+find one: `--teleport` has an interactive picker but no non-interactive list,
+there is no session-management MCP server to install, and `claude mcp list`
+reports none configured. That remains the open question, and the reason
+strategy A is still worth an endpoint if one ever turns up.
 
 ## Layout
 

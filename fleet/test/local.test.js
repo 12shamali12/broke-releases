@@ -322,3 +322,108 @@ test('no remote leaves repo empty rather than showing a local path', () => {
   const raw = toRawRecord({ sessionId: 'a', name: 'x', cwd: '/home/dev/scratch' }, null, { remote: null });
   assert.equal(normalizeFleet([raw]).sessions[0].repo, null);
 });
+
+// ---------------------------------------------------------------- not running
+
+test('a session whose process has exited is still on the board', async () => {
+  // `claude agents --json` only lists running processes, so a session you
+  // closed the terminal on is invisible to it — and that is exactly the
+  // session this product exists to surface, the one that sat for eleven days.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-importer'), { recursive: true });
+    await writeFile(join(projects, '-home-dev-importer', 'gone.jsonl'), `${entry()}\n`);
+
+    const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: projects });
+    const s = normalizeFleet(await adapter.list()).sessions[0];
+
+    assert.equal(s.id, 'gone');
+    assert.equal(s.reachable, false, 'nothing can be delivered to it right now');
+    assert.equal(s.connection, 'disconnected');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a dead session mid-tool-call reads as interrupted, not working', async () => {
+  // Only a live process can be mid-turn. Showing it as "working" would be a
+  // claim that something is happening when nothing is.
+  const raw = toRawRecord(
+    { sessionId: 'a', name: 'x' },
+    readTranscript([entry({ message: { model: 'claude-opus-5', stop_reason: 'tool_use', content: [{ type: 'tool_use' }] } })]),
+    { live: false },
+  );
+  const s = normalizeFleet([raw]).sessions[0];
+  assert.notEqual(s.lane, 'working');
+  assert.equal(s.status, 'idle');
+});
+
+test('one session in two project directories is one session', async () => {
+  // A session that changes working directory gets a transcript under each
+  // slug. Without deduplication it appears twice, with two different and both
+  // plausible states — and you cannot tell which is current.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-a'), { recursive: true });
+    await mkdir(join(projects, '-home-dev-b'), { recursive: true });
+    await writeFile(join(projects, '-home-dev-a', 'same.jsonl'), `${entry({ gitBranch: 'old' })}\n`);
+    // Written second, so it is the newer file and should win.
+    await new Promise((r) => setTimeout(r, 20));
+    await writeFile(join(projects, '-home-dev-b', 'same.jsonl'), `${entry({ gitBranch: 'current' })}\n`);
+
+    const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: projects });
+    const sessions = normalizeFleet(await adapter.list()).sessions;
+
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].branch, 'current', 'the newest transcript wins');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a running session is enriched, not duplicated, by its transcript', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-importer'), { recursive: true });
+    await writeFile(join(projects, '-home-dev-importer', 'live.jsonl'), `${entry()}\n`);
+
+    const adapter = new LocalAdapter({
+      exec: fakeExec([{ sessionId: 'live', cwd: '/home/dev/importer', name: 'importer', pid: 7 }]),
+      projectsDir: projects,
+    });
+    const sessions = normalizeFleet(await adapter.list()).sessions;
+
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0].title, 'importer', 'named by the process');
+    assert.equal(sessions[0].branch, 'main', 'detailed by the transcript');
+    assert.equal(sessions[0].reachable, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('old transcripts are not read at all', async () => {
+  // Bounded by mtime before any file is opened, because a laptop accumulates
+  // hundreds and the poll cost must not grow with your history.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-x'), { recursive: true });
+    await writeFile(join(projects, '-home-dev-x', 'ancient.jsonl'), `${entry()}\n`);
+
+    const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: projects });
+    // Ask as though it were a year from now.
+    const records = await adapter.list({ now: Date.now() + 365 * 24 * 3600 * 1000 });
+    assert.deepEqual(records, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('no projects directory is an empty fleet, not a crash', async () => {
+  const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: '/nonexistent-fleet-test' });
+  assert.deepEqual(await adapter.list(), []);
+});

@@ -45,6 +45,20 @@ const TAIL_BYTES = 128 * 1024;
 const LIST_TIMEOUT_MS = 20_000;
 
 /**
+ * How far back a transcript is still worth showing, and how many to read.
+ *
+ * `claude agents --json` only lists RUNNING processes. A session you closed the
+ * terminal on is invisible to it — and that is exactly the session this product
+ * exists to surface, the one that sat for eleven days. The transcripts remember
+ * it, so they are scanned too.
+ *
+ * Bounded twice, because a laptop accumulates hundreds: by age and by count.
+ * Both are applied from `mtime` alone, before any file is opened.
+ */
+const RECENT_MS = 14 * 24 * 60 * 60 * 1000;
+const MAX_TRANSCRIPTS = 40;
+
+/**
  * How the CLI names a project directory: the absolute path with every
  * non-alphanumeric run replaced by a dash.
  */
@@ -161,8 +175,10 @@ function textOf(entry) {
  * invented — `normalizeSession` already handles absent fields, and a plausible
  * guess would be worse than a gap because nothing downstream could tell.
  */
-export function toRawRecord(agent, transcript, { remote = null } = {}) {
-  const running = transcript?.stopReason === 'tool_use' || transcript?.lastSpeaker === 'user';
+export function toRawRecord(agent, transcript, { remote = null, live = true } = {}) {
+  // Only a live process can be mid-turn. A transcript ending on a tool call
+  // whose process has since exited was interrupted, not working.
+  const running = live && (transcript?.stopReason === 'tool_use' || transcript?.lastSpeaker === 'user');
   const waiting = transcript?.lastSpeaker === 'assistant' && transcript?.stopReason !== 'tool_use';
 
   // A local session is only ever "needs you" in the weak sense that it has
@@ -187,7 +203,11 @@ export function toRawRecord(agent, transcript, { remote = null } = {}) {
     // Local processes on this machine: exactly what `bridge` means, and it is
     // connected by definition because we just saw its pid.
     environment_kind: 'bridge',
-    connection_status: 'connected',
+    // A process we can see is connected; one whose transcript is on disk but
+    // whose process has gone is exactly what `disconnected` means. The board
+    // renders that dimmed with a reason, and a command for it is held rather
+    // than failed — correct, because the machine may simply be asleep.
+    connection_status: live ? 'connected' : 'disconnected',
     origin: agent.kind === 'background' ? 'background' : 'claude_code_cli',
     tags: agent.kind ? [`kind:${agent.kind}`] : [],
     post_turn_summary: {
@@ -309,23 +329,82 @@ export class LocalAdapter {
     return null;
   }
 
-  async list() {
-    const agents = await this.agents();
-    const records = [];
+  /**
+   * Recently-touched transcripts, newest first, deduplicated by session.
+   *
+   * The same session id appears under more than one project directory when a
+   * session changes working directory, so the newest file wins. Without that,
+   * one session shows up twice with two different, both-plausible states.
+   */
+  async recentTranscripts({ now = Date.now() } = {}) {
+    const found = new Map(); // sessionId -> { path, mtime }
+    let dirs;
+    try {
+      dirs = await readdir(this.#projectsDir);
+    } catch {
+      return [];
+    }
 
-    for (const agent of agents) {
-      if (!agent?.sessionId) continue;
-      let transcript = null;
-      const path = await this.#transcriptPath(agent);
-      if (path) {
+    for (const slug of dirs) {
+      let files;
+      try {
+        files = await readdir(join(this.#projectsDir, slug));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) continue;
+        const sessionId = file.slice(0, -'.jsonl'.length);
+        const path = join(this.#projectsDir, slug, file);
+        let mtime;
         try {
-          transcript = readTranscript(await tailLines(path));
+          ({ mtimeMs: mtime } = await stat(path));
+        } catch {
+          continue;
+        }
+        if (now - mtime > RECENT_MS) continue;
+        const existing = found.get(sessionId);
+        if (!existing || mtime > existing.mtime) found.set(sessionId, { path, mtime, sessionId });
+      }
+    }
+
+    return [...found.values()].sort((a, b) => b.mtime - a.mtime).slice(0, MAX_TRANSCRIPTS);
+  }
+
+  async list({ now = Date.now() } = {}) {
+    const agents = await this.agents();
+    const running = new Map(agents.filter((a) => a?.sessionId).map((a) => [a.sessionId, a]));
+
+    // Everything running, plus anything recently alive. A session whose process
+    // has exited is not gone — it is unreachable, which this product already
+    // renders honestly, and a command for it is held rather than failed.
+    const candidates = new Map();
+    for (const [sessionId, agent] of running) candidates.set(sessionId, { agent, path: null });
+    for (const t of await this.recentTranscripts({ now })) {
+      const existing = candidates.get(t.sessionId);
+      if (existing) existing.path = t.path;
+      else candidates.set(t.sessionId, { agent: { sessionId: t.sessionId }, path: t.path });
+    }
+
+    const records = [];
+    for (const { agent, path } of candidates.values()) {
+      const file = path ?? (await this.#transcriptPath(agent));
+      let transcript = null;
+      if (file) {
+        try {
+          transcript = readTranscript(await tailLines(file));
         } catch {
           // A transcript we cannot read is a thinner record, not a lost
           // session: the process is still real and still worth showing.
         }
       }
-      records.push(toRawRecord(agent, transcript, { remote: await this.#remoteFor(agent.cwd) }));
+      const cwd = agent.cwd ?? transcript?.cwd ?? null;
+      records.push(
+        toRawRecord({ ...agent, cwd }, transcript, {
+          remote: await this.#remoteFor(cwd),
+          live: running.has(agent.sessionId),
+        }),
+      );
     }
 
     return records;
