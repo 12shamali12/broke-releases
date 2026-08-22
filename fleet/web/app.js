@@ -563,9 +563,12 @@ function viewSettings() {
             h('div', { class: 'card-sub' }, health ? `adapter ${health.adapter}` : 'no health yet')))),
 
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Notifications'), h('span', { class: 'line' })),
-      h('button', { class: 'quiet', style: 'width:100%', onclick: enablePush }, 'Enable push notifications'),
+      h('div', { class: 'row', style: 'margin-top:0' },
+        h('button', { class: 'quiet', onclick: enablePush },
+          state.settings.push ? 'Re-subscribe this device' : 'Enable push notifications'),
+        state.settings.push ? h('button', { style: 'flex-grow:0', onclick: testPush }, 'Test') : null),
       h('p', { class: 'detail', style: 'margin-top:8px;font-size:11.5px' },
-        'Add Fleet to your home screen first — iOS only allows push for installed web apps.'),
+        'Blocked sessions, 24-hour stalls and undelivered commands. Nothing else. Quiet hours 23:00–08:00, where only a blocked session still buzzes. On iOS, add Fleet to your home screen first — Apple gates push behind that.'),
 
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Appearance'), h('span', { class: 'line' })),
       themeRow,
@@ -586,11 +589,60 @@ function viewSettings() {
   ];
 }
 
+/**
+ * Subscribe this device for Web Push.
+ *
+ * On iOS this only works once the app is on the home screen — Apple gates the
+ * whole API behind standalone display mode — so say that plainly rather than
+ * letting the request fail with no explanation.
+ */
 async function enablePush() {
-  if (!('Notification' in window)) return toast('This browser has no notifications');
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return toast('This browser cannot receive push');
+  }
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if (!standalone && /iphone|ipad|ipod/i.test(navigator.userAgent)) {
+    return toast('Add Fleet to your home screen first — iOS requires it');
+  }
+
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') return toast('Notifications declined');
-  toast('Notifications on');
+
+  try {
+    const { publicKey } = await api('/v1/push/key');
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
+    });
+    const raw = subscription.toJSON();
+    await api('/v1/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint: raw.endpoint, keys: raw.keys }),
+    });
+    state.settings.push = true;
+    store.set(LS.settings, state.settings);
+    toast('Push on — try the test below');
+    render();
+  } catch (err) {
+    toast(`Could not subscribe: ${err.message}`);
+  }
+}
+
+async function testPush() {
+  try {
+    const { sent, failed } = await api('/v1/push/test', { method: 'POST' });
+    toast(sent ? 'Sent — check your lock screen' : `Nothing sent (${failed} failed)`);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+/** applicationServerKey wants raw bytes, not the base64url string. */
+function urlBase64ToUint8Array(base64) {
+  const padded = (base64 + '='.repeat((4 - (base64.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
 }
 
 // ---------------------------------------------------------------- shell

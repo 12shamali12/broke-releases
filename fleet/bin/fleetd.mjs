@@ -18,6 +18,7 @@ import { Poller } from '../src/poller.js';
 import { CommandQueue } from '../src/queue.js';
 import { createAdapter, CompositeAdapter, CliAdapter, CredentialAdapter, AgentAdapter } from '../src/adapters/index.js';
 import { DeviceStore } from '../src/http/auth.js';
+import { PushService } from '../src/push/index.js';
 import { createFleetServer } from '../src/http/server.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -84,9 +85,14 @@ const config = await loadConfig();
 const adapter = buildAdapter(config);
 const queue = await CommandQueue.open({ path: join(STATE, 'commands.json') });
 const devices = await DeviceStore.open({ path: join(STATE, 'devices.json') });
+const push = await PushService.open({ path: join(STATE, 'push.json') });
 
 const poller = new Poller({ adapter, queue, intervalMs });
-const { server, hub } = createFleetServer({ poller, queue, devices, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
+const { server, hub } = createFleetServer({ poller, queue, devices, push, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
+
+// Quiet hours mute everything except a blocked session, which is the one
+// thing worth waking someone for.
+push.attach(poller, { quietHours: { from: 23, to: 8 } });
 
 poller.on('event', (e) => {
   if (e.severity !== 'push') return;
@@ -104,6 +110,7 @@ await new Promise((resolve) => server.listen(port, host, resolve));
 console.log(`${C.b}fleetd${C.off} ${C.dim}listening on http://${host}:${port} · adapter ${adapter.name} · poll ${intervalMs / 1000}s${C.off}`);
 console.log(`${C.dim}phone app   http://${host}:${port}/${C.off}`);
 console.log(`${C.dim}cockpit     http://${host}:${port}/cockpit${C.off}`);
+console.log(`${C.dim}push        ${push.size} subscription(s) · quiet hours 23:00–08:00${C.off}`);
 
 if (devices.isEmpty) {
   const { code } = devices.openPairing();

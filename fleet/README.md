@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 94 tests, no network, no CLI, no credentials
+npm test                        # 112 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -49,6 +49,10 @@ DELETE /v1/commands/:id
 GET    /v1/devices
 DELETE /v1/devices/:id               revoke one phone, nothing else
 POST   /mcp                          JSON-RPC 2.0 — the MCP face
+GET    /v1/push/key                  the VAPID public key
+POST   /v1/push/subscribe            {endpoint, keys}
+DELETE /v1/push/subscribe            {endpoint}
+POST   /v1/push/test                 a real notification, end to end
 ```
 
 ## The MCP face
@@ -128,6 +132,8 @@ src/http/events.js      the event log and the SSE hub
 src/http/server.js      routing, validation, auth gate
 src/http/static.js      serves the app; traversal is contained, not guessed at
 src/http/mcp.js         the MCP face: JSON-RPC, nine tools, same auth
+src/push/crypto.js      RFC 8291 + 8188 + 8292, from the specs, no deps
+src/push/index.js       subscriptions, delivery, quiet hours
 web/                    the PWA: six screens, offline cache, outbox, push
 web-cockpit/            the desktop cockpit: rail, transcript, palette, keys
 fixtures/               synthetic snapshots — see "Fixtures" below
@@ -160,6 +166,35 @@ For the same reason, **this directory should move to its own private repository
 before it grows further.** It is here because it is the branch this work was
 started on, not because it belongs next to an app manifest.
 
+## Web Push, implemented rather than wrapped
+
+Push is the feature the phone app exists for: a board only works if you remember
+to look at it, and a push arrives whether you do or not. That is the difference
+between noticing a blocked session in a minute and noticing it in eleven days.
+
+`src/push/crypto.js` implements the three RFCs directly — 8291 (ECDH + HKDF +
+aes128gcm), 8188 (the content-encoding framing) and 8292 (the ES256 VAPID JWT).
+Every push library is a wrapper around those; ~120 lines of `node:crypto` keeps
+fleetd dependency-free.
+
+The test that matters decrypts what the encrypter produced, performing the
+receiving half of RFC 8291. Well-shaped bytes prove nothing — a browser has to
+be able to read them.
+
+Discipline, enforced in code and covered by tests:
+
+- **Only push-severity events are sent**: blocked, a 24-hour stall, and a
+  command that could not be delivered. A tool that buzzes for `session.started`
+  gets muted within a week, and then the one alert that mattered is muted too.
+- **Quiet hours (23:00–08:00) mute everything except a blocked session.**
+- **A 410 drops the subscription** rather than retrying forever — the push
+  service is telling us the browser threw it away.
+- **VAPID keys are generated once and persisted.** Rotating them silently
+  invalidates every subscription: every phone goes quiet without saying why.
+
+`POST /v1/push/test` sends a real notification so you can prove the chain works
+before trusting it to wake you at 3am.
+
 ## Known gap: the rate-limit percentage
 
 The designs show the five-hour window as a percentage bar. The payload does not
@@ -175,6 +210,6 @@ first is a design change; the second is real work. Undecided — see
 - [ ] 01 Spike the adapter — **needs the laptop**
 - [x] 02 Core — model, diff, queue, poller, adapters
 - [x] 03 HTTP + SSE + device auth — **tunnel and Access still to wire up**
-- [x] 04 The PWA — **Web Push still needs VAPID keys and a subscription store**
+- [x] 04 The PWA
 - [x] 05 The cockpit — keyboard-first, command palette, appearance
 - [x] 06 MCP face — nine tools over JSON-RPC

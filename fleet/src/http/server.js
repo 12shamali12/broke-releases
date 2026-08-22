@@ -102,7 +102,7 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
+export function createFleetServer({ poller, queue, devices, push = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
@@ -188,6 +188,48 @@ export function createFleetServer({ poller, queue, devices, log = new EventLog()
 
     if (method === 'GET' && path === '/v1/fleet') {
       return send(res, 200, withHealth(requireFleet()));
+    }
+
+    // --- push ---
+
+    if (path === '/v1/push/key') {
+      if (!push) throw new HttpError(503, 'push is not configured');
+      // The public half is all that ever leaves this process.
+      return send(res, 200, { publicKey: push.publicKey, subscriptions: push.size });
+    }
+
+    if (path === '/v1/push/subscribe') {
+      if (!push) throw new HttpError(503, 'push is not configured');
+      const body = await readJson(req);
+
+      if (method === 'POST') {
+        try {
+          const result = await push.subscribe({
+            endpoint: body.endpoint,
+            keys: body.keys,
+            deviceId: device.id,
+          });
+          return send(res, 201, result);
+        } catch (err) {
+          throw new HttpError(400, err.message);
+        }
+      }
+      if (method === 'DELETE') {
+        const removed = await push.unsubscribe(String(body.endpoint ?? ''));
+        return send(res, 200, { ok: removed });
+      }
+    }
+
+    // A real notification, end to end, so the person can prove the chain works
+    // before trusting it to wake them at 3am.
+    if (method === 'POST' && path === '/v1/push/test') {
+      if (!push) throw new HttpError(503, 'push is not configured');
+      const result = await push.send({
+        title: 'Fleet is wired up',
+        body: 'If you are reading this on your lock screen, push works.',
+        sessionId: null,
+      });
+      return send(res, 200, result);
     }
 
     if (method === 'GET' && path === '/v1/stream') {
