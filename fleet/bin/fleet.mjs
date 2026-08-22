@@ -260,6 +260,49 @@ switch (command) {
     break;
   }
 
+  case 'stats': {
+    const days = Number(rest[0] ?? 7);
+    const m = await api(`/v1/metrics?windowMs=${days * 86_400_000}`);
+    const t = m.timeToAcknowledge;
+
+    console.log(`\n${C.b}How long a session waits for you${C.off} ${C.dim}· last ${days} day${days === 1 ? '' : 's'}${C.off}`);
+    if (!t.n) {
+      console.log(`  ${C.dim}nothing has needed you yet${C.off}\n`);
+    } else {
+      // Percentiles, not a mean: the failure this measures is a long tail, and
+      // an average buries the one session that sat for a week.
+      const row = (label, value, colour = C.ft) =>
+        console.log(`  ${C.dim}${label.padEnd(13)}${C.off}${colour}${ago(value).padStart(5)}${C.off}`);
+      row('typical', t.p50, C.ok);
+      row('slow 1 in 10', t.p90);
+      row('worst', t.worst, t.worst > 86_400_000 ? C.ac : C.ft);
+      console.log(`  ${C.dim}${''.padEnd(13)}      over ${t.n} episode${t.n === 1 ? '' : 's'}${C.off}`);
+    }
+
+    const b = m.blocked;
+    // Tolerate an older fleetd that does not report `openAnswered` yet: a
+    // stats screen showing NaN is worse than one showing a slightly low count.
+    const answered = b.answered + (b.openAnswered ?? 0);
+    console.log(`  ${C.dim}${answered} answered · ${b.unanswered} resolved without you · ` +
+      `${b.stillWaiting.length ? C.ac : C.dim}${b.stillWaiting.length} still waiting${C.off}`);
+
+    if (b.stillWaiting.length) {
+      console.log(`\n${C.ac}Still waiting${C.off}`);
+      for (const w of b.stillWaiting) {
+        console.log(`  ${C.ac}●${C.off} ${(w.title ?? w.sessionId.slice(0, 22)).padEnd(28)} ${C.dim}${ago(w.waitingMs)}${C.off}`);
+      }
+    }
+
+    const d = m.delivery;
+    const rate = (d.commandFailureRate * 100).toFixed(1);
+    console.log(`\n${C.b}Delivery${C.off}`);
+    console.log(`  ${C.dim}commands${C.off}  ${d.commandsQueued} queued · ${d.commandsSent} sent · ` +
+      `${d.commandsFailed ? C.ac : C.ok}${d.commandsFailed} failed${C.off} ${C.dim}(${rate}%)${C.off}`);
+    console.log(`  ${C.dim}polls${C.off}     ${d.pollOk} ok · ${d.pollFailed ? C.ac : C.dim}${d.pollFailed} failed${C.off}`);
+    console.log(`  ${C.dim}uptime    ${ago(m.uptimeMs)}${C.off}\n`);
+    break;
+  }
+
   case 'media':
   case 'play':
   case 'pause':
@@ -345,6 +388,7 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet open <ref>            print the claude.ai URL
   fleet media                 what is playing on the laptop
   fleet play|pause|next|prev  drive it
+  fleet stats [days]          is this actually helping? (default 7)
   fleet queue                 the command queue
   fleet watch                 live tail of transitions
   fleet pair <code>           once, against a running fleetd

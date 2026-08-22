@@ -60,6 +60,7 @@ const state = {
   selected: null,
   query: '',
   /** Ids already drawn on the board — anything absent gets the entrance. */
+  metrics: null,
   seen: new Set(),
   /** Ids that just transitioned into blocked; each pulses exactly once. */
   fresh: new Set(),
@@ -306,7 +307,19 @@ function staleness() {
 function go(view, selected = null) {
   state.view = view;
   state.selected = selected;
+  // Fetched only when the screen that shows it opens: a stats query on every
+  // poll would cost more than the number is worth.
+  if (view === 'settings') refreshMetrics();
   render();
+}
+
+async function refreshMetrics() {
+  try {
+    state.metrics = await api('/v1/metrics');
+    render();
+  } catch {
+    // Leave whatever was there. A stale number is more use than a blank card.
+  }
 }
 
 // ---------------------------------------------------------------- views
@@ -661,6 +674,54 @@ function viewSearch() {
   ];
 }
 
+/**
+ * The one honest answer to "is this tool worth having".
+ *
+ * Shown as percentiles rather than an average, because the failure Fleet
+ * exists to catch is a long tail: thirty-nine sessions answered in a minute
+ * and one forgotten for eleven days averages out to something that looks fine.
+ */
+function statsCard() {
+  const m = state.metrics;
+  if (!m) return h('div', { class: 'card' }, h('div', { class: 'detail' }, 'Loading…'));
+
+  const t = m.timeToAcknowledge;
+  const b = m.blocked;
+  const answered = b.answered + (b.openAnswered ?? 0);
+
+  if (!t.n) {
+    return h('div', { class: 'card' },
+      h('div', { class: 'card-title' }, 'Nothing has needed you yet'),
+      h('div', { class: 'card-sub', style: 'margin-top:5px' }, 'over the last 7 days'));
+  }
+
+  const stat = (label, value, tone) =>
+    h('div', { style: 'flex:1;min-width:0' },
+      h('div', { style: 'font-family:var(--mono);font-size:17px;font-weight:600;' + (tone ? `color:var(--${tone})` : '') }, ago(value)),
+      h('div', { style: 'font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ft);margin-top:2px' }, label));
+
+  return h('div', { class: 'card' },
+    h('div', { class: 'card-sub', style: 'margin-bottom:10px' }, 'How long a session waits for you · 7 days'),
+    h('div', { style: 'display:flex;gap:12px' },
+      stat('typical', t.p50, 'ok'),
+      stat('slow 1 in 10', t.p90, null),
+      stat('worst', t.worst, t.worst > 86_400_000 ? 'ac' : null)),
+    h('div', { class: 'detail', style: 'margin-top:11px;font-size:11.5px' },
+      `${answered} answered · ${b.unanswered} resolved without you · ${b.stillWaiting.length} still waiting`),
+    b.stillWaiting.length
+      ? h('div', { style: 'margin-top:9px' },
+          b.stillWaiting.slice(0, 3).map((w) =>
+            h('div', { style: 'display:flex;gap:8px;align-items:center;font-size:12px;margin-top:4px' },
+              h('span', { class: 'dot ac', 'aria-hidden': 'true' }),
+              h('span', { style: 'flex-grow:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, w.title ?? w.sessionId.slice(0, 20)),
+              h('span', { style: 'font-family:var(--mono);font-size:10.5px;color:var(--ac)' }, ago(w.waitingMs)))))
+      : null,
+    m.delivery.commandsFailed
+      ? h('div', { class: 'detail', style: 'margin-top:10px;color:var(--ac);font-size:11.5px' },
+          `${m.delivery.commandsFailed} command${m.delivery.commandsFailed === 1 ? '' : 's'} could not be delivered — this number should be zero.`)
+      : null);
+}
+
 function viewSettings() {
   const health = state.fleet?.health;
   const themeRow = h('div', { class: 'chips', role: 'group', 'aria-label': 'Theme' },
@@ -681,6 +742,9 @@ function viewSettings() {
           h('div', { style: 'flex-grow:1' },
             h('div', { class: 'card-title' }, state.connected ? 'fleetd is reachable' : 'fleetd is unreachable'),
             h('div', { class: 'card-sub' }, health ? `adapter ${health.adapter}` : 'no health yet')))),
+
+      h('div', { class: 'rule' }, h('span', { class: 't' }, 'Is this helping?'), h('span', { class: 'line' })),
+      statsCard(),
 
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Notifications'), h('span', { class: 'line' })),
       h('div', { class: 'row', style: 'margin-top:0' },

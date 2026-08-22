@@ -12,13 +12,14 @@ import { FixtureAdapter } from '../src/adapters/fixture.js';
 import { DeviceStore, hashToken, tokensMatch } from '../src/http/auth.js';
 import { EventLog, frame } from '../src/http/events.js';
 import { createFleetServer, matchSessions, validateCommand } from '../src/http/server.js';
+import { Metrics } from '../src/metrics.js';
 
 const FIXTURE = fileURLToPath(new URL('../fixtures/fleet-series.json', import.meta.url));
 const SNAPSHOTS = JSON.parse(await readFile(FIXTURE, 'utf8'));
 const SESSION_ID = 'session_01FIXTUREaaaaaaaaaaaaaaaa';
 const UNREACHABLE_ID = 'session_01FIXTUREbbbbbbbbbbbbbbbb';
 
-async function harness({ snapshots = SNAPSHOTS } = {}) {
+async function harness({ snapshots = SNAPSHOTS, metrics = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'fleet-http-'));
   const queue = await CommandQueue.open({ path: join(dir, 'commands.json') });
   const devices = await DeviceStore.open({ path: join(dir, 'devices.json') });
@@ -33,7 +34,7 @@ async function harness({ snapshots = SNAPSHOTS } = {}) {
   };
 
   const poller = new Poller({ adapter, queue });
-  const { server, log, hub } = createFleetServer({ poller, queue, devices });
+  const { server, log, hub } = createFleetServer({ poller, queue, devices, metrics });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -55,7 +56,7 @@ async function harness({ snapshots = SNAPSHOTS } = {}) {
     });
 
   return {
-    base, call, poller, queue, devices, log, hub, token: paired.token,
+    base, call, poller, queue, devices, log, hub, metrics, token: paired.token,
     cleanup: async () => {
       hub.close();
       await new Promise((r) => server.close(r));
@@ -364,5 +365,75 @@ test('touching a device does not write to disk on every request', async () => {
     assert.equal(await store.touch(device), true, 'and disk catches up once a minute');
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+// ---------------------------------------------------------------- metrics
+
+test('/v1/metrics is not configured unless it is wired', async () => {
+  const h = await harness();
+  try {
+    const res = await h.call('/v1/metrics');
+    assert.equal(res.status, 503, 'a missing subsystem says so rather than returning empty numbers');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('sending a command records the acknowledgement', async () => {
+  // The whole metric hangs on this wiring: if the server does not tell metrics
+  // that you acted, every response time is null and the report reads as though
+  // nothing is ever answered.
+  let now = 1_000_000;
+  const metrics = new Metrics({ now: () => now });
+  const h = await harness({ metrics });
+  try {
+    await h.poller.tick();
+    metrics.blocked(SESSION_ID, { title: 'A' });
+    now += 90_000;
+
+    const res = await h.call(`/v1/fleet/${SESSION_ID}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ text: 'continue' }),
+    });
+    assert.equal(res.status, 202);
+
+    const report = await h.call('/v1/metrics').then((r) => r.json());
+    assert.equal(report.timeToAcknowledge.p50, 90_000);
+    assert.equal(report.delivery.commandsQueued, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('the window is a view, and never hides something still waiting', async () => {
+  let now = 1_000_000_000;
+  const metrics = new Metrics({ now: () => now });
+  const h = await harness({ metrics });
+  try {
+    metrics.blocked(SESSION_ID, { title: 'Importer' });
+    now += 11 * 24 * 60 * 60 * 1000;
+
+    // Ask for a one-hour window — far shorter than this session has waited.
+    const report = await h.call('/v1/metrics?windowMs=3600000').then((r) => r.json());
+    assert.equal(report.windowMs, 3_600_000);
+    assert.equal(report.blocked.openNow, 1, 'a narrow window must not make the problem disappear');
+    assert.equal(report.blocked.stillWaiting[0].title, 'Importer');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a nonsense window falls back to the default rather than erroring', async () => {
+  const metrics = new Metrics({ now: () => 0 });
+  const h = await harness({ metrics });
+  try {
+    for (const q of ['?windowMs=abc', '?windowMs=-5', '?windowMs=0', '']) {
+      const report = await h.call(`/v1/metrics${q}`).then((r) => r.json());
+      assert.equal(report.windowMs, 7 * 24 * 60 * 60 * 1000, `for ${q || '(none)'}`);
+    }
+  } finally {
+    await h.cleanup();
   }
 });

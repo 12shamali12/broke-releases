@@ -32,6 +32,7 @@ const state = {
   changed: new Set(),       // session ids that just transitioned
   drafts: {},               // per-session composer text, survives re-render
   media: null,              // null until probed; then { available, playing, … }
+  metrics: null,            // fetched when the stats sheet opens
 };
 
 // ---------------------------------------------------------------- api
@@ -325,6 +326,7 @@ function onKey(e) {
   if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); return openPalette(); }
   if (mod && e.key === '/') { e.preventDefault(); return openOverlay('keys'); }
   if (mod && e.key === ',') { e.preventDefault(); return openOverlay('look'); }
+  if (mod && e.shiftKey && e.key === '?') { e.preventDefault(); return openOverlay('stats'); }
   if (mod && e.key === '\\') { e.preventDefault(); state.view = state.view === 'wall' ? 'cockpit' : 'wall'; return render(); }
   if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); return bumpSize(1); }
   if (mod && e.key === '-') { e.preventDefault(); return bumpSize(-1); }
@@ -414,7 +416,18 @@ let focusBefore = null;
 function openOverlay(name) {
   if (!state.overlay) focusBefore = document.activeElement?.id ?? null;
   state.overlay = name;
+  // Only asked for when the sheet that shows it opens.
+  if (name === 'stats') refreshMetrics();
   render();
+}
+
+async function refreshMetrics() {
+  try {
+    state.metrics = await api('/v1/metrics');
+    render();
+  } catch {
+    // A stale number is more use than a blank sheet.
+  }
 }
 
 function closeOverlay() {
@@ -497,6 +510,8 @@ function paletteItems() {
       run: () => { state.view = state.view === 'wall' ? 'cockpit' : 'wall'; closeOverlay(); } },
     { group: 'View', glyph: 'A', tone: 'wk', title: 'Appearance', sub: 'size, typeface, colours',
       run: () => { openOverlay('look'); } },
+    { group: 'View', glyph: '◔', tone: 'ok', title: 'Is this helping?', sub: 'how long sessions wait for you',
+      run: () => { openOverlay('stats'); } },
     { group: 'View', glyph: '⌨', tone: 'wk', title: 'Keyboard shortcuts', sub: '⌘/',
       run: () => { openOverlay('keys'); } },
     { group: 'View', glyph: '◐', tone: 'wk', title: `Theme: ${state.look.theme}`, sub: 'system · light · dark',
@@ -951,6 +966,7 @@ const KEYS = [
   ['Find', 'wk', [
     ['Command palette', ['⌘K', 'hot']],
     ['This sheet', ['⌘/', 'hot']],
+    ['Is this helping?', ['⌘⇧?']],
     ['Close anything open', ['esc']],
   ]],
   ['Whatever is playing', 'ft', [
@@ -976,6 +992,73 @@ function keysOverlay() {
                 h('span', { class: 'what' }, what),
                 keys.filter((k) => k !== 'hot').map((k) =>
                   h('kbd', { class: keys.includes('hot') ? 'hot' : '' }, k))))))))
+  ];
+}
+
+/**
+ * Is this tool worth having?
+ *
+ * Percentiles rather than an average, because the failure Fleet exists to
+ * catch is a long tail — thirty-nine sessions answered in a minute and one
+ * forgotten for eleven days averages out to something that looks fine.
+ */
+function statsOverlay() {
+  const m = state.metrics;
+  const t = m?.timeToAcknowledge;
+  const b = m?.blocked;
+
+  const big = (label, value, tone) =>
+    h('div', { style: 'flex:1;min-width:0' },
+      h('div', {
+        style: `font-family:var(--mono);font-size:27px;font-weight:600;line-height:1.1;${tone ? `color:var(--${tone})` : ''}`,
+      }, value == null ? '—' : ago(value)),
+      h('div', { style: 'font-size:9.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--ft);margin-top:5px' }, label));
+
+  return [
+    h('div', { class: 'scrim', onclick: () => { closeOverlay(); }, 'aria-hidden': 'true' }),
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Metrics', style: 'width:640px' },
+      h('h2', {}, 'How long a session waits for you'),
+      h('p', { class: 'lede' },
+        'Fleet exists because a session sat blocked for eleven days and nobody noticed. That is a measurable claim, so it is measured rather than asserted — and shown as percentiles, because an average buries exactly the session worth seeing.'),
+
+      !m
+        ? h('div', { style: 'padding:26px 0;color:var(--ft);font-size:13px' }, 'Loading…')
+        : !t.n
+          ? h('div', { style: 'padding:26px 0;color:var(--ft);font-size:13px' }, 'Nothing has needed you in the last 7 days.')
+          : [
+              h('div', { style: 'display:flex;gap:20px;margin:22px 0 6px' },
+                big('typical', t.p50, 'ok'),
+                big('slow 1 in 10', t.p90, null),
+                big('worst', t.worst, t.worst > 86_400_000 ? 'ac' : null)),
+              h('div', { style: 'font-size:11.5px;color:var(--dm);margin-bottom:18px' },
+                `over ${t.n} episode${t.n === 1 ? '' : 's'} · ` +
+                `${b.answered + (b.openAnswered ?? 0)} answered · ${b.unanswered} resolved without you`),
+
+              b.stillWaiting.length
+                ? h('div', { style: 'margin-bottom:18px' },
+                    h('div', { style: 'font-size:9.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--ac);margin-bottom:9px' }, 'Still waiting on you'),
+                    b.stillWaiting.map((w) =>
+                      h('div', { style: 'display:flex;gap:9px;align-items:center;padding:5px 0;border-bottom:1px solid var(--bd)' },
+                        h('span', { class: 'dot ac', 'aria-hidden': 'true' }),
+                        h('span', { style: 'flex-grow:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
+                          w.title ?? w.sessionId.slice(0, 24)),
+                        w.inferred
+                          ? h('span', { style: 'font-size:9.5px;color:var(--ft)', title: 'Backdated from how long it has been idle — this wait began before fleetd was watching.' }, 'inferred')
+                          : null,
+                        h('span', { style: 'font-family:var(--mono);font-size:11px;color:var(--ac)' }, ago(w.waitingMs)))))
+                : null,
+
+              h('div', { style: 'padding:13px 14px;background:var(--s1);border:1px solid var(--bd);border-radius:3px' },
+                h('div', { style: 'font-size:9.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ft);margin-bottom:8px' }, 'Delivery'),
+                h('div', { style: 'font-size:12.5px;line-height:1.7;color:var(--dm)' },
+                  h('div', {}, `${m.delivery.commandsQueued} queued · ${m.delivery.commandsSent} sent · `,
+                    h('span', { style: m.delivery.commandsFailed ? 'color:var(--ac);font-weight:600' : '' },
+                      `${m.delivery.commandsFailed} failed`)),
+                  h('div', {}, `${m.delivery.pollOk} polls ok · ${m.delivery.pollFailed} failed · up ${ago(m.uptimeMs)}`),
+                  m.delivery.commandsFailed
+                    ? h('div', { style: 'color:var(--ac);margin-top:6px' }, 'A command that never arrived is the one failure this system is built to prevent. This number should be zero.')
+                    : null)),
+            ]),
   ];
 }
 
@@ -1123,7 +1206,7 @@ function render() {
           : h('div', { class: 'centre' }, h('div', { class: 'term dim' }, 'No sessions yet.')),
         s ? panel(s) : null);
 
-  const overlay = { palette: paletteOverlay, keys: keysOverlay, look: lookOverlay }[state.overlay];
+  const overlay = { palette: paletteOverlay, keys: keysOverlay, look: lookOverlay, stats: statsOverlay }[state.overlay];
   app.replaceChildren(topBar(), body, ...(overlay ? overlay() : []));
 
   if (focusId) {

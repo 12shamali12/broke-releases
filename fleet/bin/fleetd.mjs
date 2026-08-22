@@ -20,6 +20,7 @@ import { createAdapter, CompositeAdapter, CliAdapter, CredentialAdapter, AgentAd
 import { DeviceStore } from '../src/http/auth.js';
 import { PushService } from '../src/push/index.js';
 import { MediaController } from '../src/media.js';
+import { Metrics } from '../src/metrics.js';
 import { SnoozeStore } from '../src/snooze.js';
 import { createFleetServer } from '../src/http/server.js';
 
@@ -92,7 +93,13 @@ const snooze = await SnoozeStore.open({ path: join(STATE, 'snooze.json') });
 
 const poller = new Poller({ adapter, queue, intervalMs });
 const media = new MediaController();
-const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
+const metrics = await Metrics.open({ path: join(STATE, 'metrics.json') });
+metrics.attach(poller);
+// Recorded continuously, written periodically: a metrics file is not worth an
+// fsync per poll, and anything lost is at most one interval of counters.
+const metricsTimer = setInterval(() => metrics.persist().catch(() => {}), 60_000);
+metricsTimer.unref();
+const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, metrics, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
 
 // Quiet hours mute everything except a blocked session, which is the one
 // thing worth waking someone for.
@@ -144,6 +151,8 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     // poller is already stopped, so nothing new can start here.
     if (push.pending) console.log(`${C.dim}waiting on ${push.pending} push(es)…${C.off}`);
     await push.drain();
+    // The numbers are only useful if they survive the restart.
+    await metrics.persist();
     // Queued commands stay on disk; they are attempted again on next start.
     await new Promise((r) => server.close(r));
     console.log(`${C.ok}✓${C.off} ${C.dim}${queue.due(Date.now()).length} command(s) still queued for next start${C.off}`);

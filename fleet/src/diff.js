@@ -81,6 +81,23 @@ export function diffFleet(previous, next, { stallAfterMs = STALL_AFTER_MS } = {}
       );
     }
 
+    // The counterpart to `session.blocked`. Without it the feed only ever
+    // says things got worse, and nothing can tell how long a session actually
+    // spent waiting on you — which is the one number that says whether any of
+    // this works.
+    //
+    // Feed-level, never a push: a session that stopped needing you is good
+    // news, and good news does not get to buzz your phone.
+    if (!session.actionable && old.actionable) {
+      events.push(
+        event('session.unblocked', SEVERITY.FEED, session, {
+          at: now,
+          lane: session.lane,
+          waitedFor: old.staleFor ?? null,
+        }),
+      );
+    }
+
     // --- badges ---
 
     if (session.lane === 'ready' && old.lane !== 'ready') {

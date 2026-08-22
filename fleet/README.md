@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 165 tests, no network, no CLI, no credentials
+npm test                        # 191 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -56,6 +56,7 @@ GET    /v1/push/key                  the VAPID public key
 POST   /v1/push/subscribe            {endpoint, keys}
 DELETE /v1/push/subscribe            {endpoint}
 POST   /v1/push/test                 a real notification, end to end
+GET    /v1/metrics?windowMs=          is this actually helping?
 GET    /v1/media                     what is playing on the laptop, or why not
 POST   /v1/media/:verb               play-pause | next | previous | volume-up/down
 ```
@@ -139,6 +140,7 @@ src/http/static.js      serves the app; traversal is contained, not guessed at
 src/http/mcp.js         the MCP face: JSON-RPC, ten tools, same auth
 src/snooze.js           per-session alert mute, expiring, never hiding
 src/media.js            the transport: playerctl on Linux, AppleScript on macOS
+src/metrics.js          time to acknowledge, in percentiles, including open episodes
 src/atomic.js           write-then-rename, unique per write, shared by all four stores
 src/push/crypto.js      RFC 8291 + 8188 + 8292, from the specs, no deps
 src/push/index.js       subscriptions, delivery, quiet hours
@@ -217,6 +219,34 @@ because an indefinite mute is how a session goes quiet forever. And
 `command.failed` is never suppressed: snooze is a statement about a session's
 own noise, not permission to lose a message you asked to send.
 
+## Does this actually help?
+
+Fleet exists because a session sat blocked for eleven days and nobody noticed.
+That is a measurable claim, so `/v1/metrics` measures it rather than asserting
+it. `fleet stats` reads it; both clients show it.
+
+The number is **time to acknowledgement**: from the moment a session started
+needing you to the moment you did something about it. Three things make it
+honest rather than flattering:
+
+**Percentiles, never a mean.** Thirty-nine sessions answered in a minute and
+one forgotten for eleven days averages to about four hours, which sounds fine.
+It is not fine. p50 says what normal feels like; p90 and the worst say whether
+anything is still falling through.
+
+**An episode still open counts.** A design that only records completed episodes
+omits the eleven-day session entirely — it does not complete an episode until
+somebody finally looks — so the metric would read perfect for exactly as long
+as the failure lasted.
+
+**A session already blocked when fleetd starts is not invisible.** The diff
+emits nothing on a cold start, so the snapshot is observed directly and the
+wait is backdated from `staleFor`. Those episodes are marked `inferred`, since
+the wait began before fleetd was watching.
+
+Unblocking without you is recorded as *resolved without you*, not as answered:
+that is not a failure, but it is not the tool working either.
+
 ## The transport
 
 The designs put media controls in the cockpit's rail, and building them is the
@@ -270,3 +300,4 @@ first is a design change; the second is real work. Undecided — see
 - [x] 05 The cockpit — keyboard-first, command palette, appearance
 - [x] 06 MCP face — ten tools over JSON-RPC
 - [x] 07 Snooze, media transport, accessibility pass on both clients
+- [x] 08 Metrics — does this actually help?

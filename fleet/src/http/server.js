@@ -103,7 +103,7 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
+export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
@@ -216,6 +216,17 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
       if (method === 'DELETE') {
         return send(res, 200, { woken: await snooze.wake(sessionId) });
       }
+    }
+
+    // --- metrics ---
+
+    if (path === '/v1/metrics') {
+      if (!metrics) throw new HttpError(503, 'metrics are not configured');
+      const raw = Number(url.searchParams.get('windowMs'));
+      // A window is a view, not a filter on truth: anything still waiting is
+      // reported whatever window you ask for.
+      const windowMs = Number.isFinite(raw) && raw > 0 ? raw : undefined;
+      return send(res, 200, metrics.report(windowMs ? { windowMs } : {}));
     }
 
     // --- media ---
@@ -351,6 +362,10 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
           payload,
           origin: device.label ?? device.id,
         });
+
+        // Acting on a session is the acknowledgement, and the moment you acted
+        // is now — not when the laptop eventually delivers it.
+        metrics?.queued(sessionId);
 
         // Accepted, not done: it is queued, and the client is told whether it
         // is going anywhere soon. Pretending otherwise is how a message ends
