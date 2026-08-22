@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 263 tests, no network, no CLI, no credentials
+npm test                        # 273 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -71,9 +71,11 @@ POST   /v1/media/:verb               play-pause | next | previous | volume-up/do
 
 ## The MCP face
 
-`POST /mcp` speaks JSON-RPC 2.0 with ten tools: `fleet_list`, `fleet_get`,
-`fleet_send`, `fleet_stop`, `fleet_set_model`, `fleet_set_effort`,
-`fleet_compact`, `fleet_rename`, `fleet_search`, `fleet_snooze`.
+`POST /mcp` speaks JSON-RPC 2.0 with sixteen tools — everything the clients can
+do: `fleet_list`, `fleet_get`, `fleet_send`, `fleet_stop`, `fleet_set_model`,
+`fleet_set_effort`, `fleet_compact`, `fleet_rename`, `fleet_snooze`,
+`fleet_search`, `fleet_groups`, `fleet_tag`, `fleet_bulk_preview`,
+`fleet_bulk`, `fleet_metrics`, `fleet_media`.
 
 This is the highest-leverage endpoint in the design. A published artifact page
 cannot call fleetd — a strict CSP blocks it — but it *can* call the viewer's
@@ -87,6 +89,11 @@ identically whether a command came from a tap or a conversation.
 Every write tool's description says **QUEUED** in as many words, and every write
 result repeats it. A model that reports "I changed the model" when the command
 is still in a queue is the exact failure this system exists to prevent.
+
+`fleet_bulk` is the one tool whose most important safeguard is not in the code
+but in its description: it names `fleet_bulk_preview`, says to confirm with the
+person first, and says it cannot be undone. There is a test asserting the
+description still says all three, because that text is load-bearing.
 
 Writes return **202, not 200** — the command is queued, and the response says
 whether the session is reachable. Reporting a queued command as done is exactly
@@ -145,7 +152,7 @@ src/http/auth.js        per-device tokens, stored hashed
 src/http/events.js      the event log and the SSE hub
 src/http/server.js      routing, validation, auth gate
 src/http/static.js      serves the app; traversal is contained, not guessed at
-src/http/mcp.js         the MCP face: JSON-RPC, ten tools, same auth
+src/http/mcp.js         the MCP face: JSON-RPC, sixteen tools, same auth
 src/snooze.js           per-session alert mute, expiring, never hiding
 src/media.js            the transport: playerctl on Linux, AppleScript on macOS
 src/metrics.js          time to acknowledge, in percentiles, including open episodes
@@ -388,3 +395,4 @@ first is a design change; the second is real work. Undecided — see
 - [x] 08 Metrics — does this actually help?
 - [x] 09 Notifications — escalation, coalescing, lock-screen actions, receipts
 - [x] 10 Groups and bulk — derived tags, previewed group actions
+- [x] 11 MCP parity — every client capability reachable from a conversation

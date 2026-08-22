@@ -11,6 +11,8 @@ import { FixtureAdapter } from '../src/adapters/fixture.js';
 import { DeviceStore } from '../src/http/auth.js';
 import { createFleetServer } from '../src/http/server.js';
 import { createMcpHandler, handleBatch, ERR, PROTOCOL_VERSION, TOOLS, summarise } from '../src/http/mcp.js';
+import { BULK_LIMIT, TagStore } from '../src/tags.js';
+import { Metrics } from '../src/metrics.js';
 
 const FIXTURE = fileURLToPath(new URL('../fixtures/fleet-series.json', import.meta.url));
 const SNAPSHOTS = JSON.parse(await readFile(FIXTURE, 'utf8'));
@@ -26,13 +28,15 @@ async function rig({ snapshots = SNAPSHOTS, ticks = 1 } = {}) {
     queue,
   });
   for (let i = 0; i < ticks; i += 1) await poller.tick();
-  const mcp = createMcpHandler({ poller, queue });
+  const tags = new TagStore({});
+  const metrics = new Metrics({ now: () => Date.now() });
+  const mcp = createMcpHandler({ poller, queue, tags, metrics });
   const call = (method, params, id = 1) => mcp.handle({ jsonrpc: '2.0', id, method, params });
   const tool = async (name, args) => {
     const reply = await call('tools/call', { name, arguments: args });
     return reply.result;
   };
-  return { mcp, call, tool, queue, poller, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  return { mcp, call, tool, queue, poller, tags, metrics, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
 test('initialize announces a version, capabilities and how to behave', async () => {
@@ -86,7 +90,7 @@ test('every tool has a name, a description and a closed schema', async () => {
 });
 
 test('the write tools all warn that a write is queued, not delivered', async () => {
-  const writes = ['fleet_send', 'fleet_stop', 'fleet_set_model', 'fleet_set_effort', 'fleet_compact', 'fleet_rename'];
+  const writes = ['fleet_send', 'fleet_stop', 'fleet_set_model', 'fleet_set_effort', 'fleet_compact', 'fleet_rename', 'fleet_bulk'];
   for (const name of writes) {
     const t = TOOLS.find((x) => x.name === name);
     assert.match(t.description, /queued|QUEUED/i, `${name} implies delivery`);
@@ -305,5 +309,166 @@ test('a notification over HTTP is 202 with no body', async () => {
     assert.equal(await res.text(), '');
   } finally {
     await s.cleanup();
+  }
+});
+
+
+// ---------------------------------------------------------------- groups
+
+test('fleet_groups reports what can be addressed, with nothing configured', async () => {
+  const r = await rig();
+  try {
+    const { structuredContent } = await r.tool('fleet_groups', {});
+    assert.ok(structuredContent.groups.length, 'derived groups exist immediately');
+    assert.ok(structuredContent.groups.some((g) => g.tag.startsWith('lane:') && g.derived));
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('fleet_bulk_preview touches nothing, and says so', async () => {
+  // The model has to be able to show a person the blast radius before acting,
+  // and has to know that showing it is what it just did.
+  const r = await rig();
+  try {
+    const { structuredContent } = await r.tool('fleet_bulk_preview', { lane: 'blocked' });
+    assert.ok(structuredContent.count >= 1);
+    assert.match(structuredContent.note, /Nothing has been sent/);
+    assert.equal(r.queue.all.length, 0);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('fleet_bulk queues per session and never reports it as delivered', async () => {
+  const r = await rig();
+  try {
+    const { structuredContent } = await r.tool('fleet_bulk', { lane: 'blocked', verb: 'send', text: 'continue' });
+    assert.ok(structuredContent.queued >= 1);
+    assert.equal(structuredContent.failed, 0);
+    assert.match(structuredContent.note, /QUEUED, not delivered/);
+    assert.equal(r.queue.all.length, structuredContent.queued);
+    for (const one of structuredContent.results) assert.ok(one.commandId, 'each session gets its own command');
+  } finally {
+    await r.cleanup();
+  }
+});
+
+/**
+ * A tool that refuses returns a RESULT with isError, not a protocol error.
+ *
+ * That is deliberate and is what MCP asks for: the model has to be able to
+ * read why it was refused and adapt, and a JSON-RPC error is handled by the
+ * client rather than shown to the model.
+ */
+const refused = async (r, name, args) => {
+  const { result } = await r.call('tools/call', { name, arguments: args });
+  assert.equal(result?.isError, true, `${name} ${JSON.stringify(args)} should have been refused`);
+  return result.content[0].text;
+};
+
+test('fleet_bulk refuses a selection that matches nothing', async () => {
+  const r = await rig();
+  try {
+    const why = await refused(r, 'fleet_bulk', { tag: 'nope', verb: 'send', text: 'x' });
+    assert.match(why, /matches no reachable session/);
+    assert.equal(r.queue.all.length, 0);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('fleet_bulk refuses an unsupported verb and a bad effort', async () => {
+  const r = await rig();
+  try {
+    for (const args of [
+      { lane: 'blocked', verb: 'archive' },
+      { lane: 'blocked', verb: 'effort', effort: 'colossal' },
+      { lane: 'blocked', verb: 'send' },
+    ]) {
+      await refused(r, 'fleet_bulk', args);
+    }
+    assert.equal(r.queue.all.length, 0, 'nothing leaked through');
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('fleet_bulk refuses rather than half-acting above the limit', async () => {
+  const many = [Array.from({ length: BULK_LIMIT + 3 }, (_, i) => ({
+    id: `session_bulk_${i}`,
+    title: `S${i}`,
+    session_status: 'SESSION_STATUS_IDLE',
+    status_bucket: 'SESSION_STATUS_BUCKET_NEEDS_INPUT',
+    environment_kind: 'anthropic_cloud',
+    connection_status: 'connected',
+    updated_at: new Date().toISOString(),
+    post_turn_summary: { status_category: 'need_input', status_detail: 'x', needs_action: 'x' },
+  }))];
+  const r = await rig({ snapshots: many });
+  try {
+    const why = await refused(r, 'fleet_bulk', { verb: 'send', text: 'x' });
+    assert.match(why, /Narrow the selection/);
+    assert.equal(r.queue.all.length, 0);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('fleet_bulk description tells the model to preview and confirm first', async () => {
+  // The safeguard that matters most for a bulk tool is not in the code — it is
+  // whether the description makes a model check before it fires.
+  const t = TOOLS.find((x) => x.name === 'fleet_bulk');
+  assert.match(t.description, /fleet_bulk_preview/);
+  assert.match(t.description, /confirm/i);
+  assert.match(t.description, /cannot be undone/i);
+});
+
+test('fleet_tag adds, removes, and refuses a shadowing prefix', async () => {
+  const r = await rig();
+  try {
+    const added = await r.tool('fleet_tag', { sessionId: SESSION_ID, add: ['Importer Work'] });
+    assert.deepEqual(added.structuredContent.added, ['importer-work']);
+
+    const why = await refused(r, 'fleet_tag', { sessionId: SESSION_ID, add: ['lane:blocked'] });
+    assert.match(why, /reserved prefix/);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('fleet_metrics explains its own units and what to say about them', async () => {
+  // A model reporting "p50: 39991452" is not answering the question.
+  const r = await rig();
+  try {
+    const { structuredContent } = await r.tool('fleet_metrics', { days: 7 });
+    assert.match(structuredContent.note, /milliseconds/);
+    assert.ok('timeToAcknowledge' in structuredContent);
+    assert.ok('stillWaiting' in structuredContent.blocked);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('a subsystem that is not configured says so rather than failing oddly', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-mcp-bare-'));
+  try {
+    const queue = await CommandQueue.open({ path: join(dir, 'q.json') });
+    const reader = new FixtureAdapter({ snapshots: SNAPSHOTS });
+    const poller = new Poller({
+      adapter: { name: 'fixture', capabilities: { read: true, write: true }, list: () => reader.list(), send: async () => ({ ok: true }), probe: () => reader.probe() },
+      queue,
+    });
+    await poller.tick();
+    // No tags, metrics or media wired in at all.
+    const bare = createMcpHandler({ poller, queue });
+
+    for (const name of ['fleet_groups', 'fleet_metrics', 'fleet_media', 'fleet_bulk_preview']) {
+      const reply = await bare.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: {} } });
+      assert.equal(reply.error.code, ERR.INTERNAL, name);
+      assert.match(reply.error.message, /not configured/, name);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

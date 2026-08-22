@@ -12,7 +12,11 @@ import { EventLog, StreamHub } from './events.js';
 import { createStaticHandler } from './static.js';
 import { createMcpHandler, handleBatch } from './mcp.js';
 import { VERBS as MEDIA_VERBS } from '../media.js';
-import { selectSessions } from '../tags.js';
+import { BULK_LIMIT, selectSessions } from '../tags.js';
+
+// Re-exported so existing importers keep working; it is defined with the
+// selection logic it constrains.
+export { BULK_LIMIT };
 
 const MAX_BODY_BYTES = 64 * 1024;
 const VERBS = new Set(['send', 'model', 'effort', 'compact', 'rename']);
@@ -104,15 +108,12 @@ export function matchSessions(fleet, query) {
   );
 }
 
-/** The most sessions one bulk action may touch. A typo here reaches all of them. */
-export const BULK_LIMIT = 25;
-
 export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, notify = null, tags = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
   const serveCockpit = cockpitRoot ? createStaticHandler({ root: cockpitRoot }) : null;
-  const mcp = createMcpHandler({ poller, queue, snooze });
+  const mcp = createMcpHandler({ poller, queue, snooze, tags, metrics, media });
 
   // Everything the poller emits becomes a log entry, which the hub fans out.
   poller.on('event', (event) => log.append(event));

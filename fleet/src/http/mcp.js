@@ -14,6 +14,9 @@
 /** What we implement. A client asking for another version gets ours back. */
 export const PROTOCOL_VERSION = '2025-06-18';
 
+import { VERBS as MEDIA_VERBS } from '../media.js';
+import { BULK_LIMIT, selectSessions } from '../tags.js';
+
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 export const ERR = {
@@ -124,6 +127,79 @@ export const TOOLS = [
     },
   },
   {
+    name: 'fleet_groups',
+    description:
+      'List every group sessions can be addressed by, with how many are in each. Groups prefixed repo:, branch:, lane:, env: or model: are derived from the session itself and always current; unprefixed ones were added by a person or came from the platform. Use this before fleet_bulk to find out what can be addressed.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'fleet_tag',
+    description:
+      'Add or remove group tags on one session. Tags are lowercase, up to 32 characters, and cannot start with a reserved prefix (repo:, branch:, lane:, env:, model:) because those are derived automatically and a manual tag must not shadow one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...sessionArg,
+        add: { type: 'array', items: { type: 'string' } },
+        remove: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['sessionId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'fleet_bulk_preview',
+    description:
+      'Show exactly which sessions a group action would touch, WITHOUT touching them. Always call this before fleet_bulk and show the person the list — a bulk action is the one operation here that reaches every session at once, and it should never be a surprise.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tag: { type: 'string', description: 'A group from fleet_groups.' },
+        lane: { type: 'string', enum: ['blocked', 'ready', 'working', 'completed'] },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'fleet_bulk',
+    description:
+      'QUEUE the same command for every session in a group. This is the most consequential tool here: it reaches many sessions at once and cannot be undone. Call fleet_bulk_preview first and confirm with the person before using it. Unreachable sessions are skipped and reported. At most 25 sessions; above that it refuses rather than half-acting. Commands are QUEUED, not delivered.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tag: { type: 'string' },
+        lane: { type: 'string', enum: ['blocked', 'ready', 'working', 'completed'] },
+        verb: { type: 'string', enum: ['send', 'effort', 'model', 'compact'] },
+        text: { type: 'string', description: 'For verb "send".' },
+        effort: { type: 'string', enum: EFFORTS },
+        model: { type: 'string' },
+        focus: { type: 'string', description: 'For verb "compact".' },
+      },
+      required: ['verb'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'fleet_metrics',
+    description:
+      'How long sessions actually wait before someone acts on them, as percentiles, plus command and notification delivery. Reported as p50/p90/worst rather than an average, because the failure this measures is a long tail — one session forgotten for days among many answered in a minute. Sessions still waiting right now are included, and are usually the interesting part.',
+    inputSchema: {
+      type: 'object',
+      properties: { days: { type: 'number', description: 'Window in days; default 7.' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'fleet_media',
+    description:
+      'What is playing on the machine fleetd runs on, and control it: play-pause, next, previous, volume-up, volume-down. Omit the verb to just read the state. If the machine has no media backend this reports that with the reason rather than failing.',
+    inputSchema: {
+      type: 'object',
+      properties: { verb: { type: 'string', enum: MEDIA_VERBS } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'fleet_search',
     description:
       'Search sessions by title, repository, branch and status line. Transcripts are NOT indexed — they live on Anthropic\'s side, so a transcript question cannot be answered from here.',
@@ -170,7 +246,7 @@ class RpcError extends Error {
  * durability, ordering and never-silent guarantees hold identically whether a
  * command came from a phone tap or a Claude conversation.
  */
-export function createMcpHandler({ poller, queue, snooze = null, serverName = 'fleetd' }) {
+export function createMcpHandler({ poller, queue, snooze = null, tags = null, metrics = null, media = null, serverName = 'fleetd' }) {
   function fleet() {
     if (!poller.fleet) throw new RpcError(ERR.INTERNAL, 'fleetd has not completed its first poll yet');
     return poller.fleet;
@@ -237,6 +313,104 @@ export function createMcpHandler({ poller, queue, snooze = null, serverName = 'f
         throw new RpcError(ERR.INVALID_PARAMS, `effort must be one of ${EFFORTS.join(', ')}`);
       }
       return enqueue(args, 'effort', { effort }, origin);
+    },
+
+    async fleet_groups() {
+      if (!tags) throw new RpcError(ERR.INTERNAL, 'groups are not configured');
+      return { groups: tags.index(fleet()) };
+    },
+
+    async fleet_tag(args) {
+      if (!tags) throw new RpcError(ERR.INTERNAL, 'groups are not configured');
+      const id = need(args, 'sessionId');
+      session(id);
+      try {
+        return await tags.update(id, { add: args?.add ?? [], remove: args?.remove ?? [] });
+      } catch (err) {
+        throw new RpcError(ERR.INVALID_PARAMS, err.message);
+      }
+    },
+
+    async fleet_bulk_preview(args) {
+      if (!tags) throw new RpcError(ERR.INTERNAL, 'groups are not configured');
+      const { sessions, skippedUnreachable } = selectSessions(fleet(), tags, {
+        tag: args?.tag ?? null, lane: args?.lane ?? null,
+      });
+      return {
+        count: sessions.length,
+        sessions: sessions.map((s) => ({ id: s.id, title: s.title, lane: s.lane })),
+        skippedUnreachable,
+        note: 'Nothing has been sent. Show this list to the person before calling fleet_bulk.',
+      };
+    },
+
+    async fleet_bulk(args, origin) {
+      if (!tags) throw new RpcError(ERR.INTERNAL, 'groups are not configured');
+      const verb = need(args, 'verb');
+
+      const payload =
+        verb === 'send' ? { text: need(args, 'text') }
+        : verb === 'model' ? { model: need(args, 'model') }
+        : verb === 'compact' ? (args?.focus ? { focus: String(args.focus) } : {})
+        : verb === 'effort' ? { effort: need(args, 'effort') }
+        : null;
+      if (!payload) throw new RpcError(ERR.INVALID_PARAMS, `unsupported bulk verb: ${verb}`);
+      if (verb === 'effort' && !EFFORTS.includes(payload.effort)) {
+        throw new RpcError(ERR.INVALID_PARAMS, `effort must be one of ${EFFORTS.join(', ')}`);
+      }
+
+      const { sessions, skippedUnreachable } = selectSessions(fleet(), tags, {
+        tag: args?.tag ?? null, lane: args?.lane ?? null,
+      });
+      if (!sessions.length) throw new RpcError(ERR.INVALID_PARAMS, 'that selection matches no reachable session');
+      if (sessions.length > BULK_LIMIT) {
+        throw new RpcError(
+          ERR.INVALID_PARAMS,
+          `that would touch ${sessions.length} sessions; the limit is ${BULK_LIMIT}. Narrow the selection rather than running it twice.`,
+        );
+      }
+
+      const results = [];
+      for (const s of sessions) {
+        try {
+          const command = await queue.enqueue({ sessionId: s.id, verb, payload, origin: `bulk:${origin}` });
+          results.push({ id: s.id, title: s.title, ok: true, commandId: command.id });
+        } catch (err) {
+          results.push({ id: s.id, title: s.title, ok: false, error: err.message });
+        }
+      }
+      const failed = results.filter((r) => !r.ok).length;
+      return {
+        queued: results.length - failed,
+        failed,
+        skippedUnreachable,
+        results,
+        note: 'QUEUED, not delivered. Report it that way — several messages are now in flight and none has arrived yet.',
+      };
+    },
+
+    async fleet_metrics(args) {
+      if (!metrics) throw new RpcError(ERR.INTERNAL, 'metrics are not configured');
+      const days = Number(args?.days);
+      const windowMs = Number.isFinite(days) && days > 0 ? days * 86_400_000 : undefined;
+      const report = metrics.report(windowMs ? { windowMs } : {});
+      return {
+        ...report,
+        note: 'Times are milliseconds. p50 is typical, worst is the one worth mentioning. `stillWaiting` is what needs someone right now.',
+      };
+    },
+
+    async fleet_media(args) {
+      if (!media) throw new RpcError(ERR.INTERNAL, 'media control is not configured');
+      if (!args?.verb) return media.status();
+      try {
+        await media.command(String(args.verb));
+      } catch (err) {
+        // Not an internal error: the machine simply cannot do this, and the
+        // reason is the useful part.
+        throw new RpcError(ERR.INVALID_PARAMS, err.message);
+      }
+      return media.status();
     },
 
     async fleet_snooze(args) {

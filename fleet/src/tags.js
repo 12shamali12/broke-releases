@@ -26,6 +26,16 @@ import { writeAtomic } from './atomic.js';
 const TAG_PATTERN = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 export const MAX_TAGS_PER_SESSION = 12;
 
+/**
+ * The most sessions one group action may touch.
+ *
+ * Lives here rather than in the server because it is a fact about selection,
+ * not about HTTP — and because the MCP face needs it too, which would
+ * otherwise mean mcp.js importing from server.js while server.js imports
+ * mcp.js. That cycle happens to resolve today; it should not have to.
+ */
+export const BULK_LIMIT = 25;
+
 export function normalizeTag(raw) {
   const tag = String(raw ?? '').trim().toLowerCase().replace(/\s+/g, '-');
 
