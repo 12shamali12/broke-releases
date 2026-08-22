@@ -116,7 +116,14 @@ async function service(options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'fleet-push-'));
   const path = join(dir, 'push.json');
   const svc = await PushService.open({ path, ...options });
-  return { svc, path, dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  // Drain before removing the directory: a send started by `attach` persists on
+  // completion, and a persist racing rmdir is an ENOTEMPTY that looks like a
+  // flake but is really a shutdown with no way to wait.
+  const cleanup = async () => {
+    await svc.drain();
+    await rm(dir, { recursive: true, force: true });
+  };
+  return { svc, path, dir, cleanup };
 }
 
 test('keys are generated once and reused, never rotated silently', async () => {
@@ -230,11 +237,11 @@ test('only push-severity events are sent', async () => {
 
     listeners[0]({ severity: 'feed', type: 'session.started', title: 'A' });
     listeners[0]({ severity: 'badge', type: 'session.reviewReady', title: 'B' });
-    await new Promise((r) => setImmediate(r));
+    await s.svc.drain();
     assert.equal(sent.length, 0, 'a tool that buzzes for everything gets muted');
 
     listeners[0]({ severity: 'push', type: 'session.blocked', title: 'C', needsAction: 'the password' });
-    await new Promise((r) => setImmediate(r));
+    await s.svc.drain();
     assert.equal(sent.length, 1);
   } finally {
     await s.cleanup();
@@ -257,11 +264,11 @@ test('quiet hours mute everything except a blocked session', async () => {
     s.svc.attach({ on: (_, fn) => listeners.push(fn) }, { quietHours: { from: 23, to: 8 } });
 
     listeners[0]({ severity: 'push', type: 'command.failed', title: 'A', verb: 'send', attempts: 5, error: 'x' });
-    await new Promise((r) => setImmediate(r));
+    await s.svc.drain();
     assert.equal(sent.length, 0);
 
     listeners[0]({ severity: 'push', type: 'session.blocked', title: 'B', needsAction: 'the password' });
-    await new Promise((r) => setImmediate(r));
+    await s.svc.drain();
     assert.equal(sent.length, 1, 'a blocked session is the one thing worth waking for');
   } finally {
     await s.cleanup();
@@ -279,4 +286,61 @@ test('notifications say something specific, never a bare event name', () => {
 
   const failed = composeNotification({ type: 'command.failed', title: 'Widget', verb: 'send', attempts: 5, error: 'tunnel closed' });
   assert.match(failed.body, /failed after 5 attempts: tunnel closed/);
+});
+
+test('drain waits for sends the event handler could not await', async () => {
+  // The handler is synchronous by necessity — a poll tick must not block on a
+  // push service — so without drain() a shutdown truncates a notification
+  // mid-flight and nothing reports it. This proves the wait is real.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  let finished = false;
+
+  const s = await service({
+    fetchImpl: async () => {
+      await held;
+      finished = true;
+      return { ok: true, status: 201 };
+    },
+  });
+  try {
+    const sub = fakeSubscriber();
+    await s.svc.subscribe({ endpoint: 'https://push.example/abc', keys: { p256dh: sub.p256dh, auth: sub.auth } });
+
+    const listeners = [];
+    s.svc.attach({ on: (_, fn) => listeners.push(fn) });
+    listeners[0]({ severity: 'push', type: 'session.blocked', title: 'A', needsAction: 'the password' });
+
+    assert.equal(s.svc.pending, 1, 'the send is tracked, not lost');
+    assert.equal(finished, false);
+
+    const drained = s.svc.drain();
+    release();
+    await drained;
+
+    assert.equal(finished, true, 'drain returned before the send completed');
+    assert.equal(s.svc.pending, 0);
+  } finally {
+    release();
+    await s.cleanup();
+  }
+});
+
+test('a send that throws still clears from the in-flight set', async () => {
+  // A drain that hangs on a failed send would make ctrl-c hang forever, which
+  // is a worse bug than the one it fixes.
+  const s = await service({ fetchImpl: async () => { throw new Error('network gone'); } });
+  try {
+    const sub = fakeSubscriber();
+    await s.svc.subscribe({ endpoint: 'https://push.example/abc', keys: { p256dh: sub.p256dh, auth: sub.auth } });
+
+    const listeners = [];
+    s.svc.attach({ on: (_, fn) => listeners.push(fn) });
+    listeners[0]({ severity: 'push', type: 'session.blocked', title: 'A', needsAction: 'x' });
+
+    await s.svc.drain();
+    assert.equal(s.svc.pending, 0);
+  } finally {
+    await s.cleanup();
+  }
 });

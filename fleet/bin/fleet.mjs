@@ -112,7 +112,8 @@ function printBoard(fleet, { lane = null } = {}) {
     const title = s.title.padEnd(width).slice(0, width);
     const meta = `${C.dim}${(s.modelId ?? '?').replace('claude-', '').padEnd(12)}${ago(s.staleFor).padStart(4)}${C.off}`;
     const flag = s.reachable ? '' : ` ${C.dim}[unreachable]${C.off}`;
-    console.log(` ${index} ${colour}${LANE_MARK[s.lane] ?? '·'}${C.off} ${title}  ${meta}${flag}`);
+    const muted = s.snoozedUntil ? ` ${C.dim}[snoozed ${ago(s.snoozedUntil - Date.now())}]${C.off}` : '';
+    console.log(` ${index} ${colour}${LANE_MARK[s.lane] ?? '·'}${C.off} ${title}  ${meta}${flag}${muted}`);
     if (s.summary?.needsAction) {
       console.log(`    ${C.ac}→ ${s.summary.needsAction}${C.off}`);
     }
@@ -213,6 +214,27 @@ switch (command) {
     await write(rest[0], 'compact', rest.length > 1 ? { focus: rest.slice(1).join(' ') } : {}, 'compact');
     break;
 
+  case 'snooze': {
+    const [ref, hours = '4'] = rest;
+    if (!ref) die('usage: fleet snooze <ref> [hours]   (fleet wake <ref> to undo)');
+    const s2 = await resolve(ref);
+    const r = await api(`/v1/fleet/${encodeURIComponent(s2.id)}/snooze`, {
+      method: 'POST', body: JSON.stringify({ hours: Number(hours) }),
+    });
+    const when = new Date(r.until).toLocaleTimeString();
+    console.log(`${C.dim}${s2.title}: alerts muted for ${r.hours}h, back at ${when}${C.off}`);
+    console.log(`${C.dim}it stays on the board — snooze silences, it does not hide${C.off}`);
+    break;
+  }
+
+  case 'wake': {
+    if (!rest[0]) die('usage: fleet wake <ref>');
+    const s2 = await resolve(rest[0]);
+    await api(`/v1/fleet/${encodeURIComponent(s2.id)}/snooze`, { method: 'DELETE' });
+    console.log(`${C.dim}${s2.title}: alerts back on${C.off}`);
+    break;
+  }
+
   case 'open': {
     const s = await resolve(rest[0] ?? die('usage: fleet open <ref>'));
     console.log(`https://claude.ai/code/${s.id}`);
@@ -263,6 +285,8 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet effort <ref> <level>  low | medium | high | xhigh | max
   fleet model <ref> <id>      e.g. claude-opus-5
   fleet compact <ref> [focus] free up context
+  fleet snooze <ref> [hours]  mute alerts (default 4h, max 72)
+  fleet wake <ref>            un-snooze
   fleet open <ref>            print the claude.ai URL
   fleet queue                 the command queue
   fleet watch                 live tail of transitions

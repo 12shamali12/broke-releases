@@ -12,8 +12,8 @@
  */
 
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { writeAtomic } from '../atomic.js';
 
 const PAIRING_TTL_MS = 10 * 60_000;
 /** How stale a device's lastSeenAt may get on disk before we write it. */
@@ -33,13 +33,6 @@ export function tokensMatch(a, b) {
     return false;
   }
   return timingSafeEqual(left, right);
-}
-
-async function writeAtomic(path, data) {
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, data, { encoding: 'utf8', mode: 0o600 });
-  await rename(tmp, path);
 }
 
 export class DeviceStore {
@@ -71,7 +64,7 @@ export class DeviceStore {
 
   async #persist() {
     if (!this.#path) return;
-    await writeAtomic(this.#path, JSON.stringify(this.#devices, null, 2));
+    await writeAtomic(this.#path, JSON.stringify(this.#devices, null, 2), { mode: 0o600 });
   }
 
   /** Public view — never includes hashes. */

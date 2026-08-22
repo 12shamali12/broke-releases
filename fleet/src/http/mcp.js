@@ -113,6 +113,17 @@ export const TOOLS = [
     },
   },
   {
+    name: 'fleet_snooze',
+    description:
+      'Mute alerts for one session for a number of hours (1–72, default 4). The session STAYS on the board, visibly marked — snooze silences notifications, it does not hide work. A command that fails to deliver still notifies, because losing a message is never something snooze should cover. Pass hours: 0 to wake it.',
+    inputSchema: {
+      type: 'object',
+      properties: { ...sessionArg, hours: { type: 'number', description: '1–72; 0 wakes it.' } },
+      required: ['sessionId'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'fleet_search',
     description:
       'Search sessions by title, repository, branch and status line. Transcripts are NOT indexed — they live on Anthropic\'s side, so a transcript question cannot be answered from here.',
@@ -159,7 +170,7 @@ class RpcError extends Error {
  * durability, ordering and never-silent guarantees hold identically whether a
  * command came from a phone tap or a Claude conversation.
  */
-export function createMcpHandler({ poller, queue, serverName = 'fleetd' }) {
+export function createMcpHandler({ poller, queue, snooze = null, serverName = 'fleetd' }) {
   function fleet() {
     if (!poller.fleet) throw new RpcError(ERR.INTERNAL, 'fleetd has not completed its first poll yet');
     return poller.fleet;
@@ -226,6 +237,25 @@ export function createMcpHandler({ poller, queue, serverName = 'fleetd' }) {
         throw new RpcError(ERR.INVALID_PARAMS, `effort must be one of ${EFFORTS.join(', ')}`);
       }
       return enqueue(args, 'effort', { effort }, origin);
+    },
+
+    async fleet_snooze(args) {
+      if (!snooze) throw new RpcError(ERR.INTERNAL, 'snooze is not configured');
+      const id = need(args, 'sessionId');
+      session(id);
+      const hours = args?.hours ?? 4;
+      if (hours === 0) return { woken: await snooze.wake(id), snoozedUntil: null };
+      try {
+        const result = await snooze.snooze(id, hours);
+        return {
+          snoozedUntil: new Date(result.until).toISOString(),
+          hours: result.hours,
+          capped: result.capped,
+          note: 'alerts muted; the session stays on the board, and an undeliverable command still notifies',
+        };
+      } catch (err) {
+        throw new RpcError(ERR.INVALID_PARAMS, err.message);
+      }
     },
 
     async fleet_search(args) {

@@ -19,6 +19,7 @@ import { CommandQueue } from '../src/queue.js';
 import { createAdapter, CompositeAdapter, CliAdapter, CredentialAdapter, AgentAdapter } from '../src/adapters/index.js';
 import { DeviceStore } from '../src/http/auth.js';
 import { PushService } from '../src/push/index.js';
+import { SnoozeStore } from '../src/snooze.js';
 import { createFleetServer } from '../src/http/server.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -86,16 +87,17 @@ const adapter = buildAdapter(config);
 const queue = await CommandQueue.open({ path: join(STATE, 'commands.json') });
 const devices = await DeviceStore.open({ path: join(STATE, 'devices.json') });
 const push = await PushService.open({ path: join(STATE, 'push.json') });
+const snooze = await SnoozeStore.open({ path: join(STATE, 'snooze.json') });
 
 const poller = new Poller({ adapter, queue, intervalMs });
-const { server, hub } = createFleetServer({ poller, queue, devices, push, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
+const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
 
 // Quiet hours mute everything except a blocked session, which is the one
 // thing worth waking someone for.
-push.attach(poller, { quietHours: { from: 23, to: 8 } });
+push.attach(poller, { quietHours: { from: 23, to: 8 }, gate: (event) => snooze.allows(event) });
 
 poller.on('event', (e) => {
-  if (e.severity !== 'push') return;
+  if (e.severity !== 'push' || !snooze.allows(e)) return;
   const what = e.needsAction ?? e.error ?? e.type;
   console.log(`${C.warn}▲${C.off} ${e.title ?? e.sessionId} ${C.dim}— ${what}${C.off}`);
 });
@@ -130,6 +132,11 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     console.log(`\n${C.dim}stopping…${C.off}`);
     hub.close();
     await poller.stop();
+    // A push half-sent at ctrl-c is a notification that never arrives and never
+    // reports failing — exactly the silence this project exists to prevent. The
+    // poller is already stopped, so nothing new can start here.
+    if (push.pending) console.log(`${C.dim}waiting on ${push.pending} push(es)…${C.off}`);
+    await push.drain();
     // Queued commands stay on disk; they are attempted again on next start.
     await new Promise((r) => server.close(r));
     console.log(`${C.ok}✓${C.off} ${C.dim}${queue.due(Date.now()).length} command(s) still queued for next start${C.off}`);

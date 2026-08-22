@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 122 tests, no network, no CLI, no credentials
+npm test                        # 135 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -41,6 +41,8 @@ POST   /v1/fleet/:id/model           {model}
 POST   /v1/fleet/:id/effort          {effort}
 POST   /v1/fleet/:id/compact         {focus?}
 POST   /v1/fleet/:id/rename          {title}
+POST   /v1/fleet/:id/snooze          {hours} -> mutes alerts, never the board
+DELETE /v1/fleet/:id/snooze
 GET    /v1/stream                    SSE: snapshot, then live events
 GET    /v1/events?since=<cursor>     replay, with a truncation flag
 GET    /v1/search?q=
@@ -58,9 +60,9 @@ POST   /v1/push/test                 a real notification, end to end
 
 ## The MCP face
 
-`POST /mcp` speaks JSON-RPC 2.0 with nine tools: `fleet_list`, `fleet_get`,
+`POST /mcp` speaks JSON-RPC 2.0 with ten tools: `fleet_list`, `fleet_get`,
 `fleet_send`, `fleet_stop`, `fleet_set_model`, `fleet_set_effort`,
-`fleet_compact`, `fleet_rename`, `fleet_search`.
+`fleet_compact`, `fleet_rename`, `fleet_search`, `fleet_snooze`.
 
 This is the highest-leverage endpoint in the design. A published artifact page
 cannot call fleetd — a strict CSP blocks it — but it *can* call the viewer's
@@ -132,7 +134,9 @@ src/http/auth.js        per-device tokens, stored hashed
 src/http/events.js      the event log and the SSE hub
 src/http/server.js      routing, validation, auth gate
 src/http/static.js      serves the app; traversal is contained, not guessed at
-src/http/mcp.js         the MCP face: JSON-RPC, nine tools, same auth
+src/http/mcp.js         the MCP face: JSON-RPC, ten tools, same auth
+src/snooze.js           per-session alert mute, expiring, never hiding
+src/atomic.js           write-then-rename, unique per write, shared by all four stores
 src/push/crypto.js      RFC 8291 + 8188 + 8292, from the specs, no deps
 src/push/index.js       subscriptions, delivery, quiet hours
 src/cli-helpers.js      pure helpers the CLI shares, so they can be tested
@@ -197,6 +201,18 @@ Discipline, enforced in code and covered by tests:
 
 `POST /v1/push/test` sends a real notification so you can prove the chain works
 before trusting it to wake you at 3am.
+
+## Snooze mutes alerts, never the board
+
+A session you snooze still appears, still shows what it is waiting on, and is
+marked with when it comes back. Hiding it would be the worse product: the whole
+point is that nothing sits forgotten for eleven days, and a mute you cannot see
+is indistinguishable from a bug.
+
+It **expires** rather than toggling off — 4 hours by default, 72 at most —
+because an indefinite mute is how a session goes quiet forever. And
+`command.failed` is never suppressed: snooze is a statement about a session's
+own noise, not permission to lose a message you asked to send.
 
 ## Known gap: the rate-limit percentage
 

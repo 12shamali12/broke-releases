@@ -303,7 +303,8 @@ function sessionCard(s) {
       h('div', { style: 'flex-grow:1;min-width:0' },
         h('div', { class: 'card-title' }, s.title),
         h('div', { class: 'card-sub' }, [s.repo, s.branch].filter(Boolean).join(' · ') || 'no repo')),
-      h('span', { class: `age${s.staleFor > 86_400_000 ? ' hot' : ''}` }, ago(s.staleFor))),
+      h('span', { class: `age${s.staleFor > 86_400_000 ? ' hot' : ''}` },
+        s.snoozedUntil ? `⌁${ago(s.snoozedUntil - Date.now())}` : ago(s.staleFor))),
 
     need
       ? h('div', { class: 'need' },
@@ -451,6 +452,17 @@ function viewSession() {
 
       h('div', { class: 'field', style: 'margin-top:14px' }, text),
       h('div', { class: 'row', style: 'margin-top:0' },
+        h('button', {
+          class: 'quiet', style: 'flex-grow:0',
+          onclick: async () => {
+            const path = `/v1/fleet/${encodeURIComponent(s.id)}/snooze`;
+            try {
+              if (s.snoozedUntil) { await api(path, { method: 'DELETE' }); toast('Alerts back on'); }
+              else { await api(path, { method: 'POST', body: JSON.stringify({ hours: 4 }) }); toast('Muted 4h — it stays on the board'); }
+              await refresh();
+            } catch (err) { toast(err.message); }
+          },
+        }, s.snoozedUntil ? 'Wake' : 'Snooze'),
         h('button', { class: 'primary', disabled: !s.reachable, onclick: send }, 'Send'),
         h('button', { class: 'quiet', style: 'flex-grow:0', onclick: () => window.open(`https://claude.ai/code/${s.id}`, '_blank') }, 'Open in Claude'))),
   ];

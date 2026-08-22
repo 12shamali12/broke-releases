@@ -205,6 +205,23 @@ async function dispatch(sessionId, verb, payload) {
 
 const current = () => active().find((s) => s.id === state.selected) ?? active()[0] ?? null;
 
+/** Snooze mutes alerts; the row stays, marked, so the mute is never invisible. */
+async function snoozeSession(s) {
+  const path = `/v1/fleet/${encodeURIComponent(s.id)}/snooze`;
+  try {
+    if (s.snoozedUntil) {
+      await api(path, { method: 'DELETE' });
+      toast('Alerts back on');
+    } else {
+      await api(path, { method: 'POST', body: JSON.stringify({ hours: 4 }) });
+      toast('Muted for 4h — it stays on the board');
+    }
+    await refresh();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 function selectByOffset(delta) {
   const list = active();
   if (!list.length) return;
@@ -272,6 +289,12 @@ function onKey(e) {
   if (mod && e.key.toLowerCase() === 'm') { e.preventDefault(); state.menu = state.menu === 'model' ? null : 'model'; return render(); }
   if (mod && e.key.toLowerCase() === 'e') { e.preventDefault(); state.menu = state.menu === 'effort' ? null : 'effort'; return render(); }
   if (mod && e.key.toLowerCase() === 'l') { e.preventDefault(); return document.getElementById('composer')?.focus(); }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    const s = current();
+    if (s) snoozeSession(s);
+    return;
+  }
   if (mod && e.key.toLowerCase() === 'o') {
     e.preventDefault();
     const s = current();
@@ -338,6 +361,12 @@ function paletteItems() {
         run: () => { dispatch(s.id, 'model', { model: id }); state.overlay = null; render(); },
       });
     }
+    rows.push({
+      group: 'This session', glyph: '⌁', tone: 'wk',
+      title: s.snoozedUntil ? 'Wake this session' : 'Snooze alerts for 4 hours',
+      sub: s.snoozedUntil ? `muted for another ${ago(s.snoozedUntil - Date.now())}` : 'it stays on the board, marked',
+      run: () => { snoozeSession(s); state.overlay = null; render(); },
+    });
     rows.push({
       group: 'This session', glyph: '↯', tone: 'ac', title: 'Compact the context', sub: 'summarise history',
       run: () => { dispatch(s.id, 'compact', {}); state.overlay = null; render(); },
@@ -444,7 +473,8 @@ function railRow(s, index) {
         h('div', { class: `meter${pct >= 70 ? ' hot' : ''}` }, h('i', { style: `width:${pct}%` })),
         h('span', { class: 'ctx' }, s.contextMax >= 1e6 ? '1M' : '200K'))),
     h('div', { class: 'right' },
-      h('span', { class: `age${(s.staleFor ?? 0) > 864e5 ? ' hot' : ''}` }, ago(s.staleFor)),
+      h('span', { class: `age${(s.staleFor ?? 0) > 864e5 ? ' hot' : ''}`, title: s.snoozedUntil ? `muted for ${ago(s.snoozedUntil - Date.now())}` : null },
+        s.snoozedUntil ? `⌁${ago(s.snoozedUntil - Date.now())}` : ago(s.staleFor)),
       index <= 9 ? h('span', { class: 'jump' }, `⌘${index}`) : null));
 }
 
@@ -586,6 +616,7 @@ function panel(s) {
     ['Change model', '⌘M', () => { state.menu = 'model'; render(); }, !s.reachable],
     ['Change effort', '⌘E', () => { state.menu = 'effort'; render(); }, !s.reachable],
     ['Compact', '⌘⇧C', () => dispatch(s.id, 'compact', {}), !s.reachable],
+    [s.snoozedUntil ? 'Wake' : 'Snooze 4h', '⌘⇧S', () => snoozeSession(s), false],
     ['Appearance', '⌘,', () => { state.overlay = 'look'; render(); }, false],
     ['Open in Claude', '⌘O', () => window.open(`https://claude.ai/code/${s.id}`, '_blank'), false],
   ];

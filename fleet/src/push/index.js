@@ -9,19 +9,12 @@
  * Only push-severity events are sent. Everything else lands in the feed.
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { writeAtomic } from '../atomic.js';
 import { encryptPayload, generateVapidKeys, vapidHeader } from './crypto.js';
 
 /** How long the push service should hold a message for a phone that is off. */
 const TTL_SECONDS = 4 * 60 * 60;
-
-async function writeAtomic(path, data) {
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, data, { encoding: 'utf8', mode: 0o600 });
-  await rename(tmp, path);
-}
 
 /** What a push actually says. Short, specific, and never a bare event name. */
 export function composeNotification(event) {
@@ -52,6 +45,8 @@ export class PushService {
   #subject;
   #fetch;
   #now;
+  /** Sends started by `attach` that nobody is holding a promise for. */
+  #inFlight = new Set();
 
   constructor({ path, subject = 'mailto:fleet@localhost', fetchImpl = globalThis.fetch, now = () => Date.now() } = {}) {
     this.#path = path;
@@ -93,7 +88,7 @@ export class PushService {
 
   async #persist() {
     if (!this.#path) return;
-    await writeAtomic(this.#path, JSON.stringify({ keys: this.#keys, subscriptions: this.#subscriptions }, null, 2));
+    await writeAtomic(this.#path, JSON.stringify({ keys: this.#keys, subscriptions: this.#subscriptions }, null, 2), { mode: 0o600 });
   }
 
   /** The only half of the key pair that ever leaves this process. */
@@ -199,13 +194,43 @@ export class PushService {
    * gets muted within a week, and then the one notification that mattered is
    * muted too.
    */
-  attach(poller, { quietHours = null } = {}) {
+  attach(poller, { quietHours = null, gate = null } = {}) {
     poller.on('event', (event) => {
       if (event.severity !== 'push') return;
+      // Snooze lives outside this class so it can also gate the console log
+      // and the MCP face without duplicating the rule.
+      if (gate && !gate(event)) return;
       if (quietHours && this.#inQuietHours(quietHours) && event.type !== 'session.blocked') return;
-      this.send(composeNotification(event)).catch(() => {});
+      this.deliver(composeNotification(event));
     });
     return this;
+  }
+
+  /**
+   * Fire-and-forget send that is still awaitable.
+   *
+   * The event handler cannot await — a poll tick must not block on a push
+   * service — but something has to, or a shutdown truncates a notification
+   * mid-flight and a test cannot know when the writes have stopped. Tracking
+   * the promise costs nothing and makes `drain()` honest.
+   */
+  deliver(notification) {
+    const inFlight = this.send(notification)
+      .catch(() => ({ sent: 0, dropped: 0, failed: 0 }))
+      .finally(() => this.#inFlight.delete(inFlight));
+    this.#inFlight.add(inFlight);
+    return inFlight;
+  }
+
+  /** Resolves once every send started by `attach` has settled. */
+  async drain() {
+    // A send can start another persist while we wait, so loop rather than
+    // awaiting one snapshot of the set.
+    while (this.#inFlight.size) await Promise.all([...this.#inFlight]);
+  }
+
+  get pending() {
+    return this.#inFlight.size;
   }
 
   /** Blocked sessions still buzz in quiet hours; nothing else does. */

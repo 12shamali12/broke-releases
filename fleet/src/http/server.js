@@ -102,12 +102,12 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, push = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
+export function createFleetServer({ poller, queue, devices, push = null, snooze = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
   const serveCockpit = cockpitRoot ? createStaticHandler({ root: cockpitRoot }) : null;
-  const mcp = createMcpHandler({ poller, queue });
+  const mcp = createMcpHandler({ poller, queue, snooze });
 
   // Everything the poller emits becomes a log entry, which the hub fans out.
   poller.on('event', (event) => log.append(event));
@@ -116,7 +116,10 @@ export function createFleetServer({ poller, queue, devices, push = null, log = n
   );
 
   function withHealth(fleet) {
-    return { ...fleet, health: poller.health };
+    // Snoozed sessions stay on the board, marked — a mute you cannot see is
+    // indistinguishable from a bug.
+    const decorated = snooze ? snooze.decorate(fleet) : fleet;
+    return { ...decorated, health: poller.health };
   }
 
   function requireFleet() {
@@ -188,6 +191,30 @@ export function createFleetServer({ poller, queue, devices, push = null, log = n
 
     if (method === 'GET' && path === '/v1/fleet') {
       return send(res, 200, withHealth(requireFleet()));
+    }
+
+    // --- snooze ---
+
+    if (segments[0] === 'v1' && segments[1] === 'fleet' && segments[2] && segments[3] === 'snooze') {
+      if (!snooze) throw new HttpError(503, 'snooze is not configured');
+      const sessionId = decodeURIComponent(segments[2]);
+      requireSession(sessionId);
+
+      if (method === 'POST') {
+        const body = await readJson(req);
+        try {
+          const result = await snooze.snooze(sessionId, body.hours ?? 4);
+          return send(res, 200, {
+            ...result,
+            note: 'alerts muted; the session stays on the board, and an undeliverable command still notifies',
+          });
+        } catch (err) {
+          throw new HttpError(400, err.message);
+        }
+      }
+      if (method === 'DELETE') {
+        return send(res, 200, { woken: await snooze.wake(sessionId) });
+      }
     }
 
     // --- push ---

@@ -9,8 +9,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { writeAtomic } from './atomic.js';
 
 export const PENDING = 'pending';
 export const SENDING = 'sending';
@@ -23,14 +23,6 @@ const BACKOFF_MS = [2_000, 8_000, 30_000, 120_000];
 
 export function backoffFor(attempt) {
   return BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
-}
-
-/** Write-then-rename so a crash mid-write cannot truncate the queue. */
-async function writeAtomic(path, data) {
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, data, 'utf8');
-  await rename(tmp, path);
 }
 
 export class CommandQueue {
