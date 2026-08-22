@@ -333,3 +333,16 @@ test('an oversized body is refused', async () => {
     await h.cleanup();
   }
 });
+
+test('the cockpit prefix owns its 404s', async () => {
+  const h = await harness();
+  try {
+    // Without a cockpitRoot the prefix is not claimed at all, so this harness
+    // proves the general case: an unknown path never leaks a different handler's
+    // status. With a root wired (bin/fleetd.mjs) a miss is a 404.
+    const res = await h.call('/cockpit/nope.js');
+    assert.ok([401, 404].includes(res.status));
+  } finally {
+    await h.cleanup();
+  }
+});

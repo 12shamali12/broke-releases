@@ -101,10 +101,11 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, log = new EventLog(), hub = null, webRoot = null }) {
+export function createFleetServer({ poller, queue, devices, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
+  const serveCockpit = cockpitRoot ? createStaticHandler({ root: cockpitRoot }) : null;
 
   // Everything the poller emits becomes a log entry, which the hub fans out.
   poller.on('event', (event) => log.append(event));
@@ -133,6 +134,14 @@ export function createFleetServer({ poller, queue, devices, log = new EventLog()
     const segments = path.split('/').filter(Boolean); // ['v1','fleet',':id','send']
 
     // --- unauthenticated ---
+
+    // The cockpit owns its whole prefix: a miss here is a 404, not a fall
+    // through to the phone app or — worse — a confusing 401 from the API gate.
+    if (serveCockpit && (path === '/cockpit' || path.startsWith('/cockpit/'))) {
+      const inner = path.replace(/^\/cockpit/, '') || '/';
+      if (await serveCockpit(req, res, inner)) return undefined;
+      throw new HttpError(404, `no such cockpit asset: ${path}`);
+    }
 
     if (serveStatic && !path.startsWith('/v1/')) {
       if (await serveStatic(req, res, path)) return undefined;

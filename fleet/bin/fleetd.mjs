@@ -86,7 +86,7 @@ const queue = await CommandQueue.open({ path: join(STATE, 'commands.json') });
 const devices = await DeviceStore.open({ path: join(STATE, 'devices.json') });
 
 const poller = new Poller({ adapter, queue, intervalMs });
-const { server, hub } = createFleetServer({ poller, queue, devices, webRoot: join(ROOT, 'web') });
+const { server, hub } = createFleetServer({ poller, queue, devices, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
 
 poller.on('event', (e) => {
   if (e.severity !== 'push') return;
@@ -102,7 +102,8 @@ poller.on('error', (err) => console.error('[fleetd]', err));
 await new Promise((resolve) => server.listen(port, host, resolve));
 
 console.log(`${C.b}fleetd${C.off} ${C.dim}listening on http://${host}:${port} · adapter ${adapter.name} · poll ${intervalMs / 1000}s${C.off}`);
-console.log(`${C.dim}the app is at http://${host}:${port}/ — add it to your home screen once the tunnel is up${C.off}`);
+console.log(`${C.dim}phone app   http://${host}:${port}/${C.off}`);
+console.log(`${C.dim}cockpit     http://${host}:${port}/cockpit${C.off}`);
 
 if (devices.isEmpty) {
   const { code } = devices.openPairing();

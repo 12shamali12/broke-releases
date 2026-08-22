@@ -9,15 +9,21 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 72 tests, no network, no CLI, no credentials
+npm test                        # 73 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
 ```
 
-With the daemon running, the app is at `http://127.0.0.1:8787/`. It is a
-plain PWA — no build step, no framework, no dependency — served off disk by
-fleetd itself, so the tunnel that reaches the API reaches the app too.
+With the daemon running there are two clients, both served off disk by fleetd
+with no build step, no framework and no dependency:
+
+| | | |
+|---|---|---|
+| **phone** | `http://127.0.0.1:8787/` | a PWA — triage, six screens, offline cache, outbox |
+| **cockpit** | `http://127.0.0.1:8787/cockpit` | desktop, keyboard-first — rail, transcript, controls |
+
+The tunnel that reaches the API reaches both.
 
 ## The API
 
@@ -102,6 +108,7 @@ src/http/events.js      the event log and the SSE hub
 src/http/server.js      routing, validation, auth gate
 src/http/static.js      serves the app; traversal is contained, not guessed at
 web/                    the PWA: six screens, offline cache, outbox, push
+web-cockpit/            the desktop cockpit: rail, transcript, palette, keys
 fixtures/               synthetic snapshots — see "Fixtures" below
 ```
 
@@ -148,5 +155,5 @@ first is a design change; the second is real work. Undecided — see
 - [x] 02 Core — model, diff, queue, poller, adapters
 - [x] 03 HTTP + SSE + device auth — **tunnel and Access still to wire up**
 - [x] 04 The PWA — **Web Push still needs VAPID keys and a subscription store**
-- [ ] 05 The cockpit
+- [x] 05 The cockpit — keyboard-first, command palette, appearance
 - [ ] 06 MCP face
