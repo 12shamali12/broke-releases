@@ -9,10 +9,11 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 304 tests, no network, no CLI, no credentials
+npm test                        # 352 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
-npm run spike                   # phase 01 — run this on the laptop (see below)
+node bin/fleet.mjs doctor       # can this machine run Fleet? no daemon needed
+node bin/spike.mjs              # which read path works here (reads only)
 ```
 
 With the daemon running there are two clients, both served off disk by fleetd
@@ -119,31 +120,78 @@ The spec said WebSocket. This ships Server-Sent Events, deliberately:
 `x-accel-buffering: no` is set because Cloudflare and nginx both buffer by
 default, which would hold every event until the response closed.
 
-## Run the spike first
+## How Fleet reads your sessions
 
-Everything after this depends on one unproven question: can a program on your
-laptop read your session list at all? `bin/spike.mjs` answers it, per strategy,
-and writes `fleet.config.json` with what worked.
+Two commands, in order. Neither needs the daemon.
 
 ```
-node bin/spike.mjs                        # reads only, changes nothing
-node bin/spike.mjs --send-to session_01…  # also proves a real send lands
+node bin/fleet.mjs doctor   # is this machine in a state where anything could work?
+node bin/spike.mjs          # which read path actually works here — reads only
 ```
 
-It never prints or stores your token.
+`doctor` costs nothing and answers the cheaper question first, because "you are
+not signed in" and "the architecture does not work" look identical from the
+outside and only one of them is about Fleet. It reports `ok`, `fail` with the
+exact command that fixes it, or `unknown` — and `unknown` never blocks, because
+a diagnostic that guesses is worse than none.
 
-## The three strategies
+The spike then decides the strategy and writes `fleet.config.json`. It never
+prints or stores your token.
 
-| | What | Used for | Risk |
+### The four strategies
+
+| | What | Used for | Status |
 |---|---|---|---|
-| **A** | Reuse the CLI's stored credential against the endpoint it calls | reads | **unofficial** — can break on any release |
-| **B** | `claude -p "…" --cloud <id> --output-format json` | writes | documented and stable |
-| **C** | A headless `claude -p` turn that returns the fleet as JSON | fallback reads | supported, but slow and costs tokens |
+| **A** | Reuse the CLI's stored credential against the endpoint it calls | reads | **unofficial**, and needs an endpoint nobody has yet |
+| **B** | `claude -p "…" --cloud <id> --output-format json` | writes | documented, stable, **works** |
+| **C** | A headless `claude -p` turn returning the fleet as JSON | fallback reads | **does not work — see below** |
+| **D** | `claude agents --json` + the CLI's own transcripts | reads | documented, free, **works** |
 
-`CompositeAdapter` wires A→C for reads and B for writes. When A breaks, reads
-fall through to C for a cool-off period rather than failing, so a break degrades
-Fleet to slow-but-working instead of dead. That fallback is covered by a test,
-not just by intent.
+### Strategy C does not exist
+
+The design leaned on C as the supported fallback: a headless turn would list
+sessions using the session-management MCP tools it already had. Running it
+showed it has none of them — a headless `claude -p` gets 42 tools and not one
+can list a session, because those tools belong to the remote-session harness
+rather than to the CLI. `claude mcp list` on the same machine reports no
+servers configured at all.
+
+That is why `AgentAdapter.probeTools()` exists and is asked *first*. Without it,
+"there are no session tools" and "the tools are there but the answer was
+malformed" arrive as one opaque failure — an architectural dead end and a
+fixable prompt bug, indistinguishable.
+
+### Strategy D: read the laptop, not the network
+
+C's absence left only the unofficial path, which needs an endpoint nobody has.
+But the laptop already knows, from two documented local sources costing no
+tokens and no network call:
+
+- **`claude agents --json`** — which sessions exist right now: pid, cwd, kind,
+  sessionId, name. Explicitly for scripting; needs no TTY.
+- **`~/.claude/projects/…/<id>.jsonl`** — the transcript the CLI writes itself:
+  timestamps, model, git branch, `stop_reason`, and real token usage.
+
+Together those give title, status, lane, model, branch, repository, idle time
+and context usage — the whole board except `needs_action`.
+
+Three decisions in that adapter are worth stating:
+
+- **Only the tail of a transcript is read.** These files reach megabytes — one
+  session here is 7 MB — and this runs every poll. The first line of a tail read
+  is a fragment, so it is dropped rather than parsed: half a JSON object is not
+  a record.
+- **A finished turn is `ready`, never `blocked`.** Locally there is no signal
+  separating "it asked you a question" from "it finished". Treating every
+  finished turn as blocked would fire a notification for each one and make the
+  alert that matters worthless.
+- **The repository is the git remote**, read from `.git/config` rather than by
+  shelling out, so `repo:owner/name` means the same thing on every machine. A
+  local path would group nothing.
+
+The honest limit: **strategy D only sees this machine.** A cloud session started
+from a phone is invisible to it, which is why its `capabilities.scope` says
+`local` and why both the spike and fleetd say so out loud at startup.
 
 ## Layout
 
@@ -153,6 +201,8 @@ src/diff.js             two snapshots -> events, with the notification policy
 src/queue.js            durable command queue: retry, backoff, never silent
 src/poller.js           the loop that joins them
 src/adapters/           the only code that talks to Anthropic
+src/adapters/local.js   strategy D: `claude agents --json` + the CLI's transcripts
+src/doctor.js           can this machine run Fleet, and what to do if not
 src/http/auth.js        per-device tokens, stored hashed
 src/http/events.js      the event log and the SSE hub
 src/http/server.js      routing, validation, auth gate
@@ -434,7 +484,7 @@ first is a design change; the second is real work. Undecided — see
 ## Status
 
 - [x] 00 Design — spec + 18 interface artboards
-- [ ] 01 Spike the adapter — **needs the laptop**
+- [x] 01 Spike the adapter — strategy C is dead, **strategy D works**
 - [x] 02 Core — model, diff, queue, poller, adapters
 - [x] 03 HTTP + SSE + device auth — **tunnel and Access still to wire up**
 - [x] 04 The PWA
@@ -447,3 +497,4 @@ first is a design change; the second is real work. Undecided — see
 - [x] 11 MCP parity — every client capability reachable from a conversation
 - [x] 12 Notes, and a flake that was two real shutdown bugs
 - [x] 13 History and undo — what happened, and taking it back
+- [x] 14 A read path that works — `doctor`, and strategy D

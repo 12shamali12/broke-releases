@@ -26,8 +26,9 @@ import { FixtureAdapter } from './fixture.js';
 import { CliAdapter } from './cli.js';
 import { CredentialAdapter } from './credential.js';
 import { AgentAdapter } from './agent.js';
+import { LocalAdapter } from './local.js';
 
-export { FixtureAdapter, CliAdapter, CredentialAdapter, AgentAdapter };
+export { FixtureAdapter, CliAdapter, CredentialAdapter, AgentAdapter, LocalAdapter };
 
 /**
  * Reads from `primary`, falling back to `fallback` when primary throws or
@@ -137,11 +138,36 @@ export function createAdapter({ strategy = 'auto', fixturePath = null, ...option
       return new CliAdapter(options);
     case 'agent':
       return new AgentAdapter(options);
+    case 'local':
+      return new LocalAdapter(options);
+
+    /**
+     * This machine, plus the documented write path.
+     *
+     * The default the spike now recommends, because it is the only read path
+     * proven to work: strategy A needs an endpoint nobody has, and strategy C
+     * turned out not to exist — a headless run has none of the session tools
+     * it assumed. Strategy D costs nothing and is entirely documented, at the
+     * price of only seeing this machine.
+     */
+    case 'local+cli':
+      return new CompositeAdapter({
+        primary: new LocalAdapter(options),
+        // No fallback: if reading this machine fails, an expensive agent turn
+        // will not know any more than the laptop does about its own processes.
+        fallback: null,
+        writer: new CliAdapter(options),
+        ...options,
+      });
+
     case 'auto':
     default:
       return new CompositeAdapter({
         primary: new CredentialAdapter(options),
-        fallback: new AgentAdapter(options),
+        // Local before agent: it is free, fast and cannot break on a release,
+        // so an agent turn is only worth spending when the laptop itself has
+        // nothing to say.
+        fallback: new LocalAdapter(options),
         writer: new CliAdapter(options),
         ...options,
       });

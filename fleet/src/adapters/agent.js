@@ -19,6 +19,26 @@ const run = promisify(execFile);
 
 const AGENT_TIMEOUT_MS = 120_000;
 
+/**
+ * Asked before the real question, and worth its own turn.
+ *
+ * A headless `claude -p` does not necessarily have the session-management MCP
+ * tools connected — interactively-authenticated servers can be absent in
+ * headless runs, which is documented and is the single biggest threat to this
+ * strategy existing at all. Without this probe, "no tools" and "tools present
+ * but the answer was malformed" surface as one opaque failure, and the person
+ * diagnosing it on their laptop has nothing to go on.
+ *
+ * Deliberately not a reasoning task: it asks for a list of names.
+ */
+const TOOLS_PROMPT = [
+  'Reply with ONLY a JSON array of the names of every tool you can call.',
+  'No prose, no code fence. If you have no tools at all, reply with [].',
+].join(' ');
+
+/** Names that would let a turn answer "what sessions exist". */
+const SESSION_TOOL_HINTS = ['list_sessions', 'get_session', 'fleet_list'];
+
 const PROMPT = [
   'List every Claude Code session on this account using the session-management MCP tools.',
   'Return ONLY a JSON array — no prose, no code fence, no explanation.',
@@ -56,6 +76,47 @@ export class AgentAdapter {
     }
 
     return parseAgentOutput(stdout);
+  }
+
+  /**
+   * Can a headless turn even see the tools this strategy depends on?
+   *
+   * Separated from `probe()` so a failure is attributable. "The agent has no
+   * session tools" is an architecture problem; "the agent returned bad JSON"
+   * is a prompt problem, and they need completely different responses.
+   */
+  async probeTools() {
+    let stdout;
+    try {
+      const result = await this.#exec(
+        this.#bin,
+        ['-p', TOOLS_PROMPT, '--model', this.#model, '--output-format', 'json'],
+        { timeout: AGENT_TIMEOUT_MS, maxBuffer: 4 << 20 },
+      );
+      stdout = result.stdout ?? '';
+    } catch (err) {
+      return { ok: false, reason: 'run-failed', detail: cleanCliError(err.stderr ?? err.message) || 'headless claude run failed' };
+    }
+
+    let tools;
+    try {
+      tools = parseAgentOutput(stdout).map((t) => String(typeof t === 'string' ? t : t?.name ?? ''));
+    } catch (err) {
+      // It ran and answered, just not in the shape asked for. That is a much
+      // better position than not running at all, and worth saying so.
+      return { ok: false, reason: 'unparseable', detail: err.message };
+    }
+
+    const session = tools.filter((t) => SESSION_TOOL_HINTS.some((hint) => t.includes(hint)));
+    return {
+      ok: session.length > 0,
+      reason: session.length ? null : 'no-session-tools',
+      tools,
+      sessionTools: session,
+      detail: session.length
+        ? `${session.length} session tool(s): ${session.join(', ')}`
+        : `${tools.length} tool(s) available, none of which can list sessions`,
+    };
   }
 
   async probe() {

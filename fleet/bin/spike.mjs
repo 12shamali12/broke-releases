@@ -22,7 +22,9 @@ import { dirname, join } from 'node:path';
 import { CliAdapter } from '../src/adapters/cli.js';
 import { AgentAdapter } from '../src/adapters/agent.js';
 import { CredentialAdapter, findCredential, CREDENTIAL_CANDIDATES } from '../src/adapters/credential.js';
+import { LocalAdapter } from '../src/adapters/local.js';
 import { normalizeFleet } from '../src/model.js';
+import { diagnose } from '../src/doctor.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CONFIG_PATH = join(ROOT, 'fleet.config.json');
@@ -70,6 +72,21 @@ const note = (s) => line(`    ${C.dim}${s}${C.off}`);
 
 line(`${C.b}Fleet · phase 01 spike${C.off}`);
 line(`${C.dim}Deciding which adapter strategy this machine can actually support.${C.off}`);
+
+// Run the cheap checks first. A spike that fails because nobody is signed in
+// is not a finding about the architecture, and spending tokens to discover it
+// would be worse than not running at all.
+const pre = await diagnose({ stateDir: join(ROOT, '.state') });
+const blockers = pre.checks.filter((c) => c.state === 'fail' && ['node', 'claude CLI', 'signed in', 'account auth', 'provider'].includes(c.name));
+if (blockers.length) {
+  head('Not yet');
+  for (const b of blockers) {
+    fail(`${b.name}: ${b.detail}`);
+    if (b.fix) note(b.fix);
+  }
+  line(`\n  ${C.dim}Fix those first — none of them are about Fleet. Then re-run.${C.off}\n`);
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------- A: credential
 head('A · credential  (fast reads — unofficial)');
@@ -137,26 +154,75 @@ if (args.skipAgent) {
   fail('needs the claude CLI, which is not available');
   results.agent = { ok: false, reason: 'no-cli' };
 } else {
-  note('running one headless turn — this costs tokens and takes a few seconds');
-  const started = Date.now();
-  const probe = await new AgentAdapter().probe();
-  const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-  if (probe.ok) {
-    pass(`${probe.detail} in ${elapsed}s`);
-    results.agent = { ok: true, detail: probe.detail, seconds: Number(elapsed) };
+  const agent = new AgentAdapter();
+
+  // Asked first, and worth its own turn. A headless run does not necessarily
+  // have the session-management MCP tools connected — interactively
+  // authenticated servers can be absent in headless runs — and that is the
+  // single biggest threat to this strategy existing at all. Without asking
+  // separately, "no tools" and "tools present but the answer was malformed"
+  // arrive as one opaque failure, and there is nothing to act on.
+  note('asking a headless turn what tools it has — cheap, but it does cost a little');
+  const tools = await agent.probeTools();
+
+  if (tools.ok) {
+    pass(`headless runs can see the session tools — ${tools.detail}`);
+  } else if (tools.reason === 'no-session-tools') {
+    fail('a headless run has no tool that can list sessions');
+    note(`it reported: ${tools.detail}`);
+    note('this is the finding that matters most — strategy C is the supported');
+    note('fallback the whole design leans on, and it does not exist here.');
+    note('fleetd can still WRITE (strategy B). Reads need strategy A to work.');
   } else {
-    fail(`${probe.detail} (after ${elapsed}s)`);
-    results.agent = { ok: false, detail: probe.detail };
+    warn(`could not tell what tools a headless run has — ${tools.detail}`);
+  }
+  results.agentTools = tools;
+
+  if (tools.reason === 'no-session-tools') {
+    // No point spending a second, larger turn on a question it cannot answer.
+    results.agent = { ok: false, reason: 'no-session-tools', detail: tools.detail };
+  } else {
+    note('running one headless turn for the fleet — this costs tokens and takes a few seconds');
+    const started = Date.now();
+    const probe = await agent.probe();
+    const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+    if (probe.ok) {
+      pass(`${probe.detail} in ${elapsed}s`);
+      results.agent = { ok: true, detail: probe.detail, seconds: Number(elapsed) };
+    } else {
+      fail(`${probe.detail} (after ${elapsed}s)`);
+      note('the tools were there, so this is a prompt or parsing problem, not an');
+      note('architectural one — the shape of the answer is fixable.');
+      results.agent = { ok: false, reason: 'bad-answer', detail: probe.detail };
+    }
   }
 }
 
+// ---------------------------------------------------------------- D: local
+head('D · local  (reads this machine — documented, free)');
+
+const local = new LocalAdapter();
+const localProbe = await local.probe();
+if (localProbe.ok) {
+  pass(localProbe.detail);
+  note('`claude agents --json` plus the transcripts the CLI writes itself.');
+  note('No network, no tokens, nothing unofficial — but it only sees sessions');
+  note('running on THIS machine. A cloud session started from a phone is invisible.');
+  results.local = { ok: true, detail: localProbe.detail };
+} else {
+  fail(localProbe.detail);
+  results.local = { ok: false, detail: localProbe.detail };
+}
+
 // ---------------------------------------------------------------- shape check
-if (results.credential?.ok || results.agent?.ok) {
+if (results.credential?.ok || results.agent?.ok || results.local?.ok) {
   head('Shape check');
   try {
     const reader = results.credential?.ok
       ? new CredentialAdapter({ baseUrl: args.baseUrl, listPath: args.listPath })
-      : new AgentAdapter();
+      : results.local?.ok
+        ? new LocalAdapter()
+        : new AgentAdapter();
     const fleet = normalizeFleet(await reader.list());
     pass(`normalised ${fleet.counts.total} sessions`);
     note(
@@ -177,20 +243,37 @@ if (results.credential?.ok || results.agent?.ok) {
 // ---------------------------------------------------------------- verdict
 head('Verdict');
 
-const canRead = Boolean(results.credential?.ok || results.agent?.ok);
+const canRead = Boolean(results.credential?.ok || results.agent?.ok || results.local?.ok);
 const canWrite = Boolean(results.cli?.ok);
 
 if (canRead && canWrite) {
-  const fast = results.credential?.ok;
-  pass(fast ? 'full speed — strategy A for reads, B for writes' : 'workable — strategy C for reads, B for writes');
-  if (!fast) note('reads will be slow and cost tokens until an endpoint is found for strategy A');
-  line(`\n  ${C.dim}Next: phase 02, fleetd core.${C.off}`);
+  if (results.credential?.ok) {
+    pass('full fleet — strategy A for reads, B for writes');
+    note('every session on the account, including cloud ones.');
+  } else if (results.local?.ok) {
+    pass('this machine — strategy D for reads, B for writes');
+    note('free, fast, and entirely documented. The limit is real and worth');
+    note('stating: sessions running elsewhere, including cloud sessions you');
+    note('started from a phone, will not appear on the board.');
+    if (results.agent?.ok) note('strategy C also works here, and can fill in the rest more slowly.');
+  } else {
+    pass('workable — strategy C for reads, B for writes');
+    note('reads will be slow and cost tokens until strategy A or D works');
+  }
+  line(`\n  ${C.dim}Next: node bin/fleetd.mjs${C.off}`);
 } else if (canRead) {
   warn('reads work, writes do not — Fleet would be a dashboard, not a control plane');
   note('install the claude CLI on this machine and re-run');
 } else if (canWrite) {
   warn('writes work, reads do not — nothing to show on a board');
-  note('try without --skip-agent, or supply an endpoint for strategy A');
+  if (results.agent?.reason === 'no-session-tools') {
+    note('a headless run cannot list sessions on this machine, so strategy C is out.');
+    note('that leaves strategy A, which needs an endpoint:');
+    note('  node bin/spike.mjs --base-url https://… --list-path /…');
+    note('until one is found, fleetd can send but cannot show.');
+  } else {
+    note('try without --skip-agent, or supply an endpoint for strategy A');
+  }
 } else {
   fail('neither path works here');
   note('the architecture needs revisiting before any more of it gets built');
@@ -198,7 +281,13 @@ if (canRead && canWrite) {
 
 const config = {
   generatedAt: new Date().toISOString(),
-  strategy: canRead && canWrite ? (results.credential?.ok ? 'auto' : 'agent+cli') : 'unproven',
+  strategy: !(canRead && canWrite)
+    ? 'unproven'
+    : results.credential?.ok
+      ? 'auto'
+      : results.local?.ok
+        ? 'local+cli'
+        : 'agent+cli',
   credential: results.credential?.ok
     ? { baseUrl: results.credential.baseUrl, listPath: results.credential.listPath }
     : null,

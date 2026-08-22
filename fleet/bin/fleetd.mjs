@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 
 import { Poller } from '../src/poller.js';
 import { CommandQueue } from '../src/queue.js';
-import { createAdapter, CompositeAdapter, CliAdapter, CredentialAdapter, AgentAdapter } from '../src/adapters/index.js';
+import { createAdapter, CompositeAdapter, CliAdapter, CredentialAdapter, AgentAdapter, LocalAdapter } from '../src/adapters/index.js';
 import { DeviceStore } from '../src/http/auth.js';
 import { PushService } from '../src/push/index.js';
 import { MediaController } from '../src/media.js';
@@ -76,16 +76,21 @@ function buildAdapter(config) {
   if (credential?.baseUrl && credential?.listPath) {
     return new CompositeAdapter({
       primary: new CredentialAdapter(credential),
-      fallback: new AgentAdapter(),
+      fallback: new LocalAdapter(),
       writer: new CliAdapter(),
     });
   }
 
+  // No endpoint. The next best proven path is the laptop itself: free, fast,
+  // documented, and — unlike the agent path — actually working. The agent path
+  // is not used as a fallback because a headless run has none of the session
+  // tools it was built on; see the spike's strategy C.
   console.log(
-    `${C.warn}!${C.off} no proven credential endpoint — reading through the slow agent path.\n` +
-      `  ${C.dim}run \`node bin/spike.mjs\` to find a fast one.${C.off}`,
+    `${C.warn}!${C.off} no proven credential endpoint — reading this machine only.\n` +
+      `  ${C.dim}sessions running elsewhere, including cloud sessions, will not appear.\n` +
+      `  run \`node bin/spike.mjs\` to look for a fuller path.${C.off}`,
   );
-  return new CompositeAdapter({ primary: new AgentAdapter(), writer: new CliAdapter() });
+  return new CompositeAdapter({ primary: new LocalAdapter(), writer: new CliAdapter() });
 }
 
 const config = await loadConfig();

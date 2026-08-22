@@ -1,0 +1,324 @@
+/**
+ * Strategy D — reading the laptop instead of the network.
+ *
+ * Every fixture here is invented. The real transcripts this parses contain
+ * whole conversations, and this repository is public; nothing that has touched
+ * a real session may end up in it. That constraint is also a useful test
+ * discipline, because it forces the parser to be exercised through its
+ * contract rather than through one machine's happy accident.
+ */
+
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { LocalAdapter, projectSlug, readTranscript, remoteUrl, tailLines, toRawRecord } from '../src/adapters/local.js';
+import { normalizeFleet } from '../src/model.js';
+
+const entry = (over = {}) => JSON.stringify({
+  type: 'assistant',
+  timestamp: '2026-08-22T10:00:00.000Z',
+  cwd: '/home/dev/importer',
+  gitBranch: 'main',
+  version: '2.1.240',
+  message: { model: 'claude-opus-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] },
+  ...over,
+});
+
+// ---------------------------------------------------------------- slug
+
+test('a project directory is named the way the CLI names it', () => {
+  assert.equal(projectSlug('/home/dev/importer'), '-home-dev-importer');
+  assert.equal(projectSlug('/Users/a/My Repo'), '-Users-a-My-Repo');
+  assert.equal(projectSlug(''), '');
+});
+
+// ---------------------------------------------------------------- tail
+
+test('only the tail of a transcript is read', async () => {
+  // These files reach many megabytes and are read on every poll. Reading them
+  // whole would make the poll cost grow with the length of the conversation.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const path = join(dir, 'big.jsonl');
+    const lines = Array.from({ length: 5000 }, (_, i) => entry({ timestamp: `2026-08-22T10:00:${String(i % 60).padStart(2, '0')}.000Z` }));
+    await writeFile(path, `${lines.join('\n')}\n`);
+
+    const tail = await tailLines(path, 4096);
+    assert.ok(tail.length > 0);
+    assert.ok(tail.length < 100, 'read a window, not the file');
+    for (const line of tail) assert.doesNotThrow(() => JSON.parse(line), 'every returned line parses');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a partial first line is dropped rather than guessed at', async () => {
+  // A tail read almost always starts mid-line. Half a JSON object is not a
+  // record, and parsing it optimistically would put garbage on the board.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const path = join(dir, 'x.jsonl');
+    await writeFile(path, `${entry()}\n${entry()}\n`);
+    const tail = await tailLines(path, 40); // lands inside a line
+    for (const line of tail) assert.doesNotThrow(() => JSON.parse(line));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a small file is read whole, with nothing dropped', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const path = join(dir, 'x.jsonl');
+    await writeFile(path, `${entry()}\n`);
+    assert.equal((await tailLines(path, 1 << 20)).length, 1, 'the only line survived');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------- parse
+
+test('a transcript yields the facts the board needs', () => {
+  const t = readTranscript([entry()]);
+  assert.equal(t.branch, 'main');
+  assert.equal(t.model, 'claude-opus-5');
+  assert.equal(t.cwd, '/home/dev/importer');
+  assert.equal(t.lastSpeaker, 'assistant');
+  assert.equal(t.stopReason, 'end_turn');
+  assert.equal(t.text, 'Done.');
+});
+
+test('the last assistant TEXT is kept, not merely the last assistant entry', () => {
+  // The final entry is very often a bare tool call with no prose. Taking only
+  // that leaves the status line empty for any session caught mid-work, which
+  // is most of the ones you are actually looking at.
+  const t = readTranscript([
+    entry({ message: { model: 'claude-opus-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Running the tests.' }] } }),
+    entry({ message: { model: 'claude-opus-5', stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'Bash' }] } }),
+  ]);
+  assert.equal(t.text, 'Running the tests.');
+  assert.equal(t.stopReason, 'tool_use', 'but the state still comes from the last entry');
+});
+
+test('a malformed line does not lose the whole transcript', () => {
+  const t = readTranscript(['{not json', entry(), '']);
+  assert.ok(t);
+  assert.equal(t.model, 'claude-opus-5');
+});
+
+test('a transcript with nothing conversational in it yields nothing', () => {
+  assert.equal(readTranscript([JSON.stringify({ type: 'system' }), JSON.stringify({ type: 'mode' })]), null);
+  assert.equal(readTranscript([]), null);
+});
+
+test('token usage comes from the CLI\'s own accounting', () => {
+  const t = readTranscript([entry({
+    message: {
+      model: 'claude-opus-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'x' }],
+      usage: { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 5, output_tokens: 20 },
+    },
+  })]);
+  assert.equal(t.tokens, 1035);
+});
+
+test('absent usage is null, never zero', () => {
+  // Zero would render as a context meter reading empty, which is a claim.
+  assert.equal(readTranscript([entry()]).tokens, null);
+});
+
+// ---------------------------------------------------------------- shape
+
+test('a local session becomes the same raw shape the API returns', () => {
+  const raw = toRawRecord(
+    { sessionId: 'abc', cwd: '/home/dev/importer', name: 'importer', pid: 42, kind: 'interactive', startedAt: 1000 },
+    readTranscript([entry()]),
+  );
+  const fleet = normalizeFleet([raw]);
+  const s = fleet.sessions[0];
+
+  assert.equal(s.id, 'abc');
+  assert.equal(s.title, 'importer');
+  assert.equal(s.branch, 'main');
+  assert.equal(s.modelId, 'claude-opus-5');
+  assert.equal(s.envKind, 'bridge', 'a process on this machine is exactly what bridge means');
+  assert.equal(s.reachable, true, 'we just saw its pid');
+});
+
+test('a finished turn is review-ready, never blocked', () => {
+  // Locally there is no signal separating "it asked you a question" from "it
+  // finished". Calling every finished turn blocked would fire a notification
+  // for each one and make the alert that matters worthless.
+  const raw = toRawRecord({ sessionId: 'a', name: 'x' }, readTranscript([entry()]));
+  const s = normalizeFleet([raw]).sessions[0];
+  assert.equal(s.lane, 'ready');
+  assert.equal(s.actionable, false, 'and so it must never raise a push');
+});
+
+test('a session mid-tool-call reads as working', () => {
+  const raw = toRawRecord({ sessionId: 'a', name: 'x' }, readTranscript([
+    entry({ message: { model: 'claude-opus-5', stop_reason: 'tool_use', content: [{ type: 'tool_use' }] } }),
+  ]));
+  const s = normalizeFleet([raw]).sessions[0];
+  assert.equal(s.lane, 'working');
+  assert.equal(s.status, 'running');
+});
+
+test('a session whose last word was yours reads as working too', () => {
+  const raw = toRawRecord({ sessionId: 'a', name: 'x' }, readTranscript([
+    entry({ type: 'user', message: { content: 'do the thing' } }),
+  ]));
+  assert.equal(normalizeFleet([raw]).sessions[0].lane, 'working');
+});
+
+test('a session with no transcript is still shown', () => {
+  // The process is real. A thinner record beats pretending it is not there.
+  const raw = toRawRecord({ sessionId: 'a', cwd: '/home/dev/thing', pid: 9, startedAt: 5000 }, null);
+  const s = normalizeFleet([raw]).sessions[0];
+  assert.equal(s.id, 'a');
+  assert.equal(s.title, 'thing', 'named from its directory when nothing else names it');
+});
+
+test('nothing unknowable is invented', () => {
+  const raw = toRawRecord({ sessionId: 'a', name: 'x' }, null);
+  // These simply are not knowable from the laptop, and a plausible guess would
+  // be worse than a gap because nothing downstream could tell the difference.
+  assert.equal(raw.post_turn_summary.needs_action, '');
+  assert.equal(raw.session_context.model, null);
+  assert.equal(raw.rate_limit_info, undefined);
+});
+
+// ---------------------------------------------------------------- adapter
+
+function fakeExec(agents, { throws = null } = {}) {
+  return async () => {
+    if (throws) throw throws;
+    return { stdout: JSON.stringify(agents), stderr: '' };
+  };
+}
+
+test('the adapter joins the process list to the transcripts', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const cwd = '/home/dev/importer';
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, projectSlug(cwd)), { recursive: true });
+    await writeFile(join(projects, projectSlug(cwd), 'sess-1.jsonl'), `${entry()}\n`);
+
+    const adapter = new LocalAdapter({
+      exec: fakeExec([{ sessionId: 'sess-1', cwd, name: 'importer', pid: 1, kind: 'interactive', startedAt: 1 }]),
+      projectsDir: projects,
+    });
+
+    const s = normalizeFleet(await adapter.list()).sessions[0];
+    assert.equal(s.title, 'importer');
+    assert.equal(s.branch, 'main', 'enriched from the transcript');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a session whose directory moved is still found by id', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-somewhere-else'), { recursive: true });
+    await writeFile(join(projects, '-somewhere-else', 'sess-1.jsonl'), `${entry()}\n`);
+
+    const adapter = new LocalAdapter({
+      exec: fakeExec([{ sessionId: 'sess-1', cwd: '/home/dev/moved', name: 'moved', pid: 1, startedAt: 1 }]),
+      projectsDir: projects,
+    });
+    assert.equal(normalizeFleet(await adapter.list()).sessions[0].branch, 'main');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a missing CLI is reported as such, not as an empty fleet', async () => {
+  // An empty board and a broken reader look identical to a person, so they
+  // must not look identical to the code.
+  const adapter = new LocalAdapter({
+    exec: fakeExec(null, { throws: Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' }) }),
+  });
+  const probe = await adapter.probe();
+  assert.equal(probe.ok, false);
+  assert.match(probe.detail, /not on PATH/);
+});
+
+test('an agent entry with no session id is skipped, not crashed on', async () => {
+  const adapter = new LocalAdapter({ exec: fakeExec([{ pid: 1 }, { sessionId: 'a', name: 'ok' }]), projectsDir: '/nope' });
+  const records = await adapter.list();
+  assert.equal(records.length, 1);
+  assert.equal(records[0].id, 'a');
+});
+
+test('the adapter says out loud that it only sees this machine', () => {
+  // A cloud session started from a phone is invisible here. That is the honest
+  // limit of this strategy and callers have to be able to know it.
+  assert.equal(new LocalAdapter({}).capabilities.scope, 'local');
+  assert.equal(new LocalAdapter({}).capabilities.write, false);
+});
+
+// ---------------------------------------------------------------- repo
+
+test('the repository is the remote, so a group means the same thing everywhere', async () => {
+  // `repo:/home/dev/importer` groups nothing — it is one machine's path. The
+  // remote is what two people, or one person on two machines, would share.
+  const config = `
+[core]
+\trepositoryformatversion = 0
+[remote "origin"]
+\turl = https://github.com/acme/importer.git
+\tfetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+\tremote = origin
+`;
+  const read = async (path) => {
+    if (path === '/home/dev/importer/.git/config') return config;
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+  };
+  assert.equal(await remoteUrl('/home/dev/importer', { read }), 'https://github.com/acme/importer.git');
+});
+
+test('a session started in a subdirectory still finds its repository', async () => {
+  const read = async (path) => {
+    if (path === '/home/dev/importer/.git/config') return '[remote "origin"]\n\turl = git@github.com:acme/importer.git\n';
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+  };
+  assert.equal(await remoteUrl('/home/dev/importer/src/deep/nested', { read }), 'git@github.com:acme/importer.git');
+});
+
+test('a repository with no origin, and no repository at all, both give null', async () => {
+  const noOrigin = async () => '[core]\n\tbare = false\n';
+  assert.equal(await remoteUrl('/home/dev/thing', { read: noOrigin }), null);
+
+  const nothing = async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
+  assert.equal(await remoteUrl('/home/dev/thing', { read: nothing }), null);
+  assert.equal(await remoteUrl(null, { read: nothing }), null);
+});
+
+test('the walk upwards is bounded', async () => {
+  // A path with no repository anywhere above it must not walk to the root one
+  // stat at a time on every poll.
+  let reads = 0;
+  const read = async () => { reads += 1; throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
+  await remoteUrl('/a/b/c/d/e/f/g/h/i/j/k/l/m/n', { read });
+  assert.ok(reads <= 8, `walked ${reads} levels`);
+});
+
+test('a remote reaches the board as owner/name', () => {
+  const raw = toRawRecord(
+    { sessionId: 'a', name: 'importer', cwd: '/home/dev/importer' },
+    readTranscript([entry()]),
+    { remote: 'https://github.com/acme/importer.git' },
+  );
+  assert.equal(normalizeFleet([raw]).sessions[0].repo, 'acme/importer');
+});
+
+test('no remote leaves repo empty rather than showing a local path', () => {
+  const raw = toRawRecord({ sessionId: 'a', name: 'x', cwd: '/home/dev/scratch' }, null, { remote: null });
+  assert.equal(normalizeFleet([raw]).sessions[0].repo, null);
+});

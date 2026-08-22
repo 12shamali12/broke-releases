@@ -21,6 +21,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ago, freshness, resolveRef } from '../src/cli-helpers.js';
+import { FAIL, OK, UNKNOWN, diagnose } from '../src/doctor.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TOKEN_PATH = join(ROOT, '.state', 'cli.json');
@@ -308,6 +309,32 @@ switch (command) {
     break;
   }
 
+  case 'doctor': {
+    // Deliberately does not need fleetd, or a token, or the network. It is the
+    // thing you run when nothing else works.
+    const { checks, summary } = await diagnose({ stateDir: join(ROOT, '.state'), port: Number(process.env.FLEET_PORT ?? 8787) });
+
+    console.log(`\n${C.b}Can this machine run Fleet?${C.off}\n`);
+    for (const c of checks) {
+      const mark = c.state === OK ? `${C.ok}✓${C.off}` : c.state === FAIL ? `${C.ac}✗${C.off}` : `${C.dim}?${C.off}`;
+      console.log(`  ${mark} ${c.name.padEnd(17)} ${c.state === OK ? C.dim : ''}${c.detail}${C.off}`);
+      // A fix is only worth printing for something actually broken; on an
+      // `unknown` it is a hint, not an instruction.
+      if (c.fix && c.state === FAIL) console.log(`      ${C.ac}→ ${c.fix}${C.off}`);
+      else if (c.fix && c.state === UNKNOWN) console.log(`      ${C.dim}${c.fix}${C.off}`);
+    }
+
+    console.log('');
+    if (summary.ready) {
+      console.log(`  ${C.ok}Ready.${C.off} ${C.dim}Next: node bin/spike.mjs — reads only, changes nothing.${C.off}\n`);
+    } else {
+      console.log(`  ${C.ac}Not ready yet.${C.off} ${C.dim}In order:${C.off}`);
+      for (const [i, fix] of summary.next.entries()) console.log(`    ${i + 1}. ${fix}`);
+      console.log('');
+    }
+    process.exit(summary.ready ? 0 : 1);
+  }
+
   case 'log':
   case 'history': {
     if (!rest[0]) die('usage: fleet log <ref>');
@@ -547,6 +574,7 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet open <ref>            print the claude.ai URL
   fleet media                 what is playing on the laptop
   fleet play|pause|next|prev  drive it
+  fleet doctor                can this machine run Fleet? (needs no daemon)
   fleet log <ref>             what happened, and what you did about it
   fleet note <ref> [text…]    your own context on a session
   fleet tags                  every group, and how many are in it
