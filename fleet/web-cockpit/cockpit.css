@@ -430,6 +430,39 @@ kbd.hot { color: var(--ac); background: var(--acf); border-color: var(--acb); }
 .tr-b[aria-disabled="true"] { opacity: .38; cursor: default; }
 .tr-b[aria-disabled="true"]:hover { background: none; color: var(--dm); border-color: var(--bd); }
 
+/* An offer, not a note. A keyboard shortcut nobody has discovered is not an
+   undo, so it is also a button, and it disappears when it stops being true. */
+.undobar {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: 22px; z-index: 45;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 12px; border-radius: 3px;
+  background: var(--tx); color: var(--bg);
+  font-size: 12px; box-shadow: 0 6px 20px color-mix(in srgb, var(--tx) 22%, transparent);
+}
+.undobar .tr-b { border-color: color-mix(in srgb, var(--bg) 40%, transparent); color: var(--bg); }
+.undobar .tr-b:hover { background: color-mix(in srgb, var(--bg) 16%, transparent); color: var(--bg); }
+
+/* ---------------- timeline ----------------
+   Your own actions sit apart from the session's. Telling the two stories
+   apart at a glance is the entire point of this view. */
+.timeline { list-style: none; margin: 0; padding: 0; }
+.tl { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 12px; line-height: 1.45; }
+.tl .when {
+  font-family: var(--mono); font-size: 9.5px; color: var(--ft);
+  min-width: 30px; text-align: right; flex-shrink: 0;
+}
+.tl .dot { flex-shrink: 0; }
+.tl .what { color: var(--tx); }
+.tl.you { margin-left: 30px; padding-left: 8px; border-left: 2px solid var(--bd2); }
+.tl.you .when { display: none; }
+.tl.you .what { color: var(--dm); }
+.rownote {
+  font-size: 9.5px; color: var(--dm); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding-left: 6px; border-left: 2px solid var(--acb);
+}
+
 /* ---------------- tags ---------------- */
 .tagbar {
   display: flex; align-items: center; gap: 8px; flex-shrink: 0;

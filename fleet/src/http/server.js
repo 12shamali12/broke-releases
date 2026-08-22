@@ -18,6 +18,28 @@ import { BULK_LIMIT, selectSessions } from '../tags.js';
 // selection logic it constrains.
 export { BULK_LIMIT };
 
+/**
+ * How a command you issued reads in a session's history.
+ *
+ * The text of a message is included because "you sent: the endpoint is …" is
+ * the entry that makes a history worth reading four days later; "you sent a
+ * message" is not. Trimmed, because a history entry is a reminder rather than
+ * a transcript.
+ */
+export function historyFor(verb, payload = {}) {
+  switch (verb) {
+    case 'send': {
+      const text = String(payload.text ?? '').trim();
+      if (text === '/stop') return ['you.stopped', null];
+      return ['you.sent', text.length > 90 ? `${text.slice(0, 90)}…` : text];
+    }
+    case 'model': return ['you.model', payload.model ?? null];
+    case 'effort': return ['you.effort', payload.effort ?? null];
+    case 'compact': return ['you.compact', null];
+    default: return [`you.${verb}`, null];
+  }
+}
+
 const MAX_BODY_BYTES = 64 * 1024;
 const VERBS = new Set(['send', 'model', 'effort', 'compact', 'rename']);
 
@@ -108,12 +130,12 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, notify = null, tags = null, notes = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
+export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, metrics = null, notify = null, tags = null, notes = null, history = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
   const serveCockpit = cockpitRoot ? createStaticHandler({ root: cockpitRoot }) : null;
-  const mcp = createMcpHandler({ poller, queue, snooze, tags, metrics, media, notes });
+  const mcp = createMcpHandler({ poller, queue, snooze, tags, metrics, media, notes, history });
 
   // Everything the poller emits becomes a log entry, which the hub fans out.
   poller.on('event', (event) => log.append(event));
@@ -238,6 +260,7 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
         try {
           const result = await snooze.snooze(sessionId, body.hours ?? 4);
           notify?.acknowledge(sessionId);
+          history?.record(sessionId, 'you.snoozed', `${result.hours}h`);
           return send(res, 200, {
             ...result,
             note: 'alerts muted; the session stays on the board, and an undeliverable command still notifies',
@@ -247,8 +270,23 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
         }
       }
       if (method === 'DELETE') {
-        return send(res, 200, { woken: await snooze.wake(sessionId) });
+        const woken = await snooze.wake(sessionId);
+        if (woken) history?.record(sessionId, 'you.woke');
+        return send(res, 200, { woken });
       }
+    }
+
+    // --- history ---
+
+    if (segments[0] === 'v1' && segments[1] === 'fleet' && segments[2] && segments[3] === 'history' && method === 'GET') {
+      if (!history) throw new HttpError(503, 'history is not configured');
+      // Deliberately not requireSession: history outlives its session, and
+      // "what happened to the thing that just disappeared" is a fair question.
+      const sessionId = decodeURIComponent(segments[2]);
+      const limit = Number(url.searchParams.get('limit'));
+      return send(res, 200, {
+        history: history.for(sessionId, Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+      });
     }
 
     // --- notes ---
@@ -266,7 +304,9 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
         requireSession(sessionId);
         const body = await readJson(req);
         try {
-          return send(res, 200, { note: await notes.set(sessionId, body.text ?? '') });
+          const saved = await notes.set(sessionId, body.text ?? '');
+          if (saved) history?.record(sessionId, 'you.noted');
+          return send(res, 200, { note: saved });
         } catch (err) {
           throw new HttpError(400, err.message);
         }
@@ -365,6 +405,7 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
             });
             metrics?.queued(session.id);
             notify?.acknowledge(session.id);
+            history?.record(session.id, ...historyFor(verb, payload));
             results.push({ id: session.id, title: session.title, ok: true, commandId: command.id, reachable: session.reachable });
           } catch (err) {
             // One session failing must not silently take the rest with it,
@@ -383,6 +424,48 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
           note: 'queued, not sent — check /v1/commands for delivery',
         });
       }
+    }
+
+    /**
+     * Undo a group action.
+     *
+     * Real undo, not a courtesy: a command lives in the queue until a poll
+     * delivers it, so for that window it can simply be removed. What has
+     * already gone out cannot be recalled, and this says which is which rather
+     * than reporting a clean success.
+     */
+    if (path === '/v1/bulk/undo' && method === 'POST') {
+      const body = await readJson(req);
+      const ids = Array.isArray(body.commandIds) ? body.commandIds : [];
+      if (!ids.length) throw new HttpError(400, 'commandIds is required');
+
+      const cancelled = [];
+      const tooLate = [];
+      for (const id of ids) {
+        const command = queue.all.find((c) => c.id === id);
+        if (!command) { tooLate.push({ id, reason: 'no such command' }); continue; }
+        if (command.state !== 'pending') {
+          // Already sending, sent or failed. Saying so is the point.
+          tooLate.push({ id, sessionId: command.sessionId, reason: command.state });
+          continue;
+        }
+        if (await queue.cancel(id)) {
+          cancelled.push({ id, sessionId: command.sessionId });
+          // The history already says you sent it. Saying you pulled it back is
+          // what keeps that account true — erasing the send instead would make
+          // the history a summary of your intentions rather than a record.
+          const [, detail] = historyFor(command.verb, command.payload);
+          history?.record(command.sessionId, 'you.recalled', detail);
+        }
+      }
+
+      return send(res, 200, {
+        cancelled: cancelled.length,
+        tooLate,
+        note: tooLate.length
+          ? 'Some had already left the queue — those cannot be recalled.'
+          : 'Nothing had been delivered yet, so nothing arrived.',
+      });
     }
 
     // --- notification settings ---
@@ -553,6 +636,10 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
         // Acting on a session is the acknowledgement, and the moment you acted
         // is now — not when the laptop eventually delivers it.
         metrics?.queued(sessionId);
+        // The half of the history that makes it worth keeping: what you did,
+        // recorded beside what the session did. Every client's write comes
+        // through here, so there is exactly one place to record it.
+        history?.record(sessionId, ...historyFor(segments[3], payload));
         // And it stops the escalation, whichever client you acted from. An
         // alert that keeps firing after you have dealt with something is what
         // makes people mute the app — taking the next real alert with it.

@@ -308,6 +308,29 @@ switch (command) {
     break;
   }
 
+  case 'log':
+  case 'history': {
+    if (!rest[0]) die('usage: fleet log <ref>');
+    const s2 = await resolve(rest[0]);
+    const { history } = await api(`/v1/fleet/${encodeURIComponent(s2.id)}/history?limit=40`);
+    if (!history.length) {
+      console.log(`${C.dim}nothing recorded for ${s2.title} yet${C.off}`);
+      break;
+    }
+
+    console.log(`\n${C.b}${s2.title}${C.off}`);
+    const TONE = { ac: C.ac, ok: C.ok, wk: C.wk, ft: C.ft };
+    for (const e of history) {
+      // The person's own actions are indented differently from the session's,
+      // because the whole value of this view is telling them apart at a glance.
+      const mark = e.actor === 'you' ? `${C.dim}›${C.off}` : `${TONE[e.tone] ?? C.ft}·${C.off}`;
+      const when = ago(Date.now() - e.at).padStart(4);
+      console.log(`  ${C.dim}${when}${C.off} ${mark} ${e.actor === 'you' ? C.dim : ''}${e.text}${C.off}`);
+    }
+    console.log('');
+    break;
+  }
+
   case 'note': {
     const [ref, ...words] = rest;
     if (!ref) die('usage: fleet note <ref> [text…]   (no text reads it, "" clears it)');
@@ -524,6 +547,7 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet open <ref>            print the claude.ai URL
   fleet media                 what is playing on the laptop
   fleet play|pause|next|prev  drive it
+  fleet log <ref>             what happened, and what you did about it
   fleet note <ref> [text…]    your own context on a session
   fleet tags                  every group, and how many are in it
   fleet tags <ref> +a -b      tag a session

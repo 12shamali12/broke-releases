@@ -63,6 +63,8 @@ const state = {
   tag: null,
   /** Unsaved note text, per session, so a re-render cannot eat it. */
   noteDrafts: {},
+  /** Per-session history, fetched when you open a session. */
+  history: {},
   /** Ids already drawn on the board — anything absent gets the entrance. */
   metrics: null,
   notify: null,
@@ -315,7 +317,18 @@ function go(view, selected = null) {
   // Fetched only when the screen that shows it opens: a stats query on every
   // poll would cost more than the number is worth.
   if (view === 'settings') refreshMetrics();
+  if (view === 'session' && selected) refreshHistory(selected);
   render();
+}
+
+async function refreshHistory(sessionId) {
+  try {
+    const { history } = await api(`/v1/fleet/${encodeURIComponent(sessionId)}/history?limit=25`);
+    state.history[sessionId] = history;
+    render();
+  } catch {
+    // Not worth an error: the rest of the session screen is still useful.
+  }
 }
 
 async function refreshMetrics() {
@@ -574,6 +587,18 @@ function viewSession() {
           h('span', { class: 'k' }, 'Model'), h('span', { class: 'v' }, s.modelId?.replace('claude-', '') ?? '—')),
         h('div', { class: 'listrow', style: 'flex-grow:1;margin:0' },
           h('span', { class: 'k' }, 'Effort'), h('span', { class: 'v' }, s.effort ?? '—'))),
+
+      state.history[s.id]?.length
+        ? [
+            h('div', { class: 'rule' }, h('span', { class: 't' }, 'What happened'), h('span', { class: 'line' })),
+            h('ol', { class: 'timeline' },
+              state.history[s.id].slice(0, 12).map((e) =>
+                h('li', { class: `tl ${e.actor}` },
+                  h('span', { class: 'when' }, ago(Date.now() - e.at)),
+                  h('span', { class: `dot ${e.tone}`, 'aria-hidden': 'true' }),
+                  h('span', { class: 'what' }, e.text)))),
+          ]
+        : null,
 
       h('div', { class: 'rule' }, h('span', { class: 't' }, 'Your note'), h('span', { class: 'line' })),
       (() => {

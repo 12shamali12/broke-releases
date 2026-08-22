@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 288 tests, no network, no CLI, no credentials
+npm test                        # 304 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -56,6 +56,8 @@ GET    /v1/push/key                  the VAPID public key
 POST   /v1/push/subscribe            {endpoint, keys}
 DELETE /v1/push/subscribe            {endpoint}
 POST   /v1/push/test                 a real notification, end to end
+GET    /v1/fleet/:id/history?limit=  what happened, and what you did about it
+POST   /v1/bulk/undo                 {commandIds} — recall what has not gone yet
 GET    /v1/fleet/:id/note            your own context on a session
 PUT    /v1/fleet/:id/note            {text} — verbatim, never truncated
 GET    /v1/notes/orphans             notes whose session is gone
@@ -74,11 +76,11 @@ POST   /v1/media/:verb               play-pause | next | previous | volume-up/do
 
 ## The MCP face
 
-`POST /mcp` speaks JSON-RPC 2.0 with seventeen tools — everything the clients can
+`POST /mcp` speaks JSON-RPC 2.0 with eighteen tools — everything the clients can
 do: `fleet_list`, `fleet_get`, `fleet_send`, `fleet_stop`, `fleet_set_model`,
 `fleet_set_effort`, `fleet_compact`, `fleet_rename`, `fleet_snooze`,
 `fleet_search`, `fleet_groups`, `fleet_tag`, `fleet_bulk_preview`,
-`fleet_bulk`, `fleet_metrics`, `fleet_media`, `fleet_note`.
+`fleet_bulk`, `fleet_metrics`, `fleet_media`, `fleet_note`, `fleet_history`.
 
 This is the highest-leverage endpoint in the design. A published artifact page
 cannot call fleetd — a strict CSP blocks it — but it *can* call the viewer's
@@ -155,7 +157,7 @@ src/http/auth.js        per-device tokens, stored hashed
 src/http/events.js      the event log and the SSE hub
 src/http/server.js      routing, validation, auth gate
 src/http/static.js      serves the app; traversal is contained, not guessed at
-src/http/mcp.js         the MCP face: JSON-RPC, seventeen tools, same auth
+src/http/mcp.js         the MCP face: JSON-RPC, eighteen tools, same auth
 src/snooze.js           per-session alert mute, expiring, never hiding
 src/media.js            the transport: playerctl on Linux, AppleScript on macOS
 src/metrics.js          time to acknowledge, in percentiles, including open episodes
@@ -164,6 +166,7 @@ src/notify/tokens.js    what a notification is allowed to do, and for how long
 src/notify/index.js     the assembly: policy + tokens + push + queue + snooze
 src/tags.js             grouping, derived and manual, and who a bulk action hits
 src/notes.js            the one field that is yours, kept verbatim
+src/history.js          what the session did and what you did, interleaved
 src/atomic.js           write-then-rename, unique per write, shared by all four stores
 src/push/crypto.js      RFC 8291 + 8188 + 8292, from the specs, no deps
 src/push/index.js       subscriptions, delivery, quiet hours
@@ -241,6 +244,34 @@ It **expires** rather than toggling off — 4 hours by default, 72 at most —
 because an indefinite mute is how a session goes quiet forever. And
 `command.failed` is never suppressed: snooze is a statement about a session's
 own noise, not permission to lose a message you asked to send.
+
+## What happened while you were away
+
+The board answers "what is true now". After four days away that is the wrong
+question — and the two situations the board renders identically are exactly the
+ones you need to tell apart:
+
+```
+Blocked Tuesday · you replied Tuesday evening · blocked again Wednesday, same question
+Blocked Tuesday · nobody has touched it
+```
+
+So a session's history keeps both stories interleaved: what the session did and
+what you did about it, each entry marked with who acted. It is bounded **per
+session**, not globally — a single ring buffer would let one chatty session
+evict the entire history of a quiet one, and the quiet one is the session you
+come back to.
+
+Only events a person would recognise are kept. Poll ticks, retries and adapter
+chatter belong in the daemon's logs; a history you have to scroll past noise to
+read is one nobody reads.
+
+**Undo is real, not a courtesy.** A command sits in the queue until a poll
+delivers it, so within that window it can simply be removed and genuinely never
+happened. `POST /v1/bulk/undo` reports what it recalled *and what had already
+gone*, because a clean success would be the same lie as reporting queued as
+sent. Recalling is itself recorded — erasing the send it undoes would make the
+history a summary of your intentions rather than a record of what happened.
 
 ## The one field that is yours
 
@@ -415,3 +446,4 @@ first is a design change; the second is real work. Undecided — see
 - [x] 10 Groups and bulk — derived tags, previewed group actions
 - [x] 11 MCP parity — every client capability reachable from a conversation
 - [x] 12 Notes, and a flake that was two real shutdown bugs
+- [x] 13 History and undo — what happened, and taking it back

@@ -236,6 +236,24 @@ nav svg { width: 19px; height: 19px; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* ---- timeline ----
+   Your own actions sit apart from the session's, because telling the two
+   stories apart at a glance is the entire point of this view. */
+.timeline { list-style: none; margin: 0; padding: 0; }
+.tl {
+  display: flex; align-items: baseline; gap: 9px;
+  padding: 5px 0; font-size: 12.5px; line-height: 1.45;
+}
+.tl .when {
+  font-family: var(--mono); font-size: 10px; color: var(--ft);
+  min-width: 34px; text-align: right; flex-shrink: 0;
+}
+.tl .dot { flex-shrink: 0; }
+.tl .what { color: var(--tx); }
+.tl.you .what { color: var(--dm); }
+.tl.you { padding-left: 9px; border-left: 2px solid var(--bd2); margin-left: 34px; }
+.tl.you .when { display: none; }
+
 /* ---- tags ---- */
 .tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 9px 0 0; }
 .tag {

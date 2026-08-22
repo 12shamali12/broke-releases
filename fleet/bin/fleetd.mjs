@@ -24,6 +24,7 @@ import { Metrics } from '../src/metrics.js';
 import { NotificationService } from '../src/notify/index.js';
 import { TagStore } from '../src/tags.js';
 import { NoteStore } from '../src/notes.js';
+import { HistoryStore } from '../src/history.js';
 import { SnoozeStore } from '../src/snooze.js';
 import { createFleetServer } from '../src/http/server.js';
 
@@ -113,12 +114,15 @@ const tags = await TagStore.open({ path: join(STATE, 'tags.json') });
 // Tags for sessions that no longer exist would otherwise accumulate forever,
 // and worse, could be re-attached to a recycled id.
 const notes = await NoteStore.open({ path: join(STATE, 'notes.json') });
+const history = (await HistoryStore.open({ path: join(STATE, 'history.json') })).attach(poller);
 poller.on('fleet', (fleet) => {
   tags.reconcile(fleet).catch(() => {});
   notes.reconcile(fleet).catch(() => {});
+  history.reconcile(fleet).catch(() => {});
+  history.persist().catch(() => {});
 });
 
-const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, metrics, notify, tags, notes, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
+const { server, hub } = createFleetServer({ poller, queue, devices, push, snooze, media, metrics, notify, tags, notes, history, webRoot: join(ROOT, 'web'), cockpitRoot: join(ROOT, 'web-cockpit') });
 
 poller.on('event', (e) => {
   if (e.severity !== 'push' || !snooze.allows(e)) return;
@@ -170,6 +174,9 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     // The numbers are only useful if they survive the restart.
     await metrics.persist();
     await devices.drain();
+    // Forced: the batching window is 30s, and anything unflushed is exactly
+    // the most recent thing that happened.
+    await history.persist({ force: true });
     // Queued commands stay on disk; they are attempted again on next start.
     await new Promise((r) => server.close(r));
     console.log(`${C.ok}✓${C.off} ${C.dim}${queue.due(Date.now()).length} command(s) still queued for next start${C.off}`);

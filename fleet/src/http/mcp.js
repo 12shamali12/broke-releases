@@ -211,6 +211,17 @@ export const TOOLS = [
     },
   },
   {
+    name: 'fleet_history',
+    description:
+      "What has happened to one session over time, newest first — both what the session did and what the person did about it. This is what answers 'why is this still stuck': a session that blocked, was answered, and blocked again with the same question is a different situation from one nobody has touched, and the board shows them identically. Each entry has an `actor` of 'you', 'session' or 'system'.",
+    inputSchema: {
+      type: 'object',
+      properties: { ...sessionArg, limit: { type: 'number' } },
+      required: ['sessionId'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'fleet_search',
     description:
       'Search sessions by title, repository, branch and status line. Transcripts are NOT indexed — they live on Anthropic\'s side, so a transcript question cannot be answered from here.',
@@ -257,7 +268,7 @@ class RpcError extends Error {
  * durability, ordering and never-silent guarantees hold identically whether a
  * command came from a phone tap or a Claude conversation.
  */
-export function createMcpHandler({ poller, queue, snooze = null, tags = null, metrics = null, media = null, notes = null, serverName = 'fleetd' }) {
+export function createMcpHandler({ poller, queue, snooze = null, tags = null, metrics = null, media = null, notes = null, history = null, serverName = 'fleetd' }) {
   function fleet() {
     if (!poller.fleet) throw new RpcError(ERR.INTERNAL, 'fleetd has not completed its first poll yet');
     return poller.fleet;
@@ -422,6 +433,16 @@ export function createMcpHandler({ poller, queue, snooze = null, tags = null, me
         throw new RpcError(ERR.INVALID_PARAMS, err.message);
       }
       return media.status();
+    },
+
+    async fleet_history(args) {
+      if (!history) throw new RpcError(ERR.INTERNAL, 'history is not configured');
+      const id = need(args, 'sessionId');
+      const limit = Number(args?.limit);
+      return {
+        history: history.for(id, Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+        note: "Newest first. `actor` says who did it — 'you' entries are the person's own actions.",
+      };
     },
 
     async fleet_note(args) {

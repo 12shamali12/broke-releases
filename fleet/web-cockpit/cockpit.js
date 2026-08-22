@@ -36,7 +36,9 @@ const state = {
   notify: null,             // notification rules, fetched with the stats sheet
   tag: null,                // narrows the rail to one group
   noteDrafts: {},           // unsaved note text, per session
+  history: {},              // per-session history, fetched on selection
   bulk: null,               // a pending group action, awaiting confirmation
+  undo: null,               // a group action still recallable from the queue
 };
 
 // ---------------------------------------------------------------- api
@@ -271,6 +273,49 @@ function selectByOffset(delta) {
   render();
 }
 
+/**
+ * Fetch a session's history when the selection lands on it.
+ *
+ * Called from render() rather than from each of the five places that set
+ * `state.selected` — the rail, the keyboard, the palette, the wall, a deep
+ * link. Wiring it into all five is how one of them gets missed.
+ */
+function historyForSelection() {
+  const id = state.selected;
+  if (!id || historyForSelection.last === id) return;
+  historyForSelection.last = id;
+  if (state.history[id]) return; // already have it; refreshed by events
+  refreshHistory(id);
+}
+
+async function undoBulk() {
+  const undo = state.undo;
+  if (!undo) return;
+  state.undo = null;
+  try {
+    const r = await api('/v1/bulk/undo', { method: 'POST', body: JSON.stringify({ commandIds: undo.ids }) });
+    // Never "undone" flatly: anything already delivered cannot be recalled,
+    // and saying otherwise would be the same lie as reporting queued as sent.
+    toast(r.tooLate.length
+      ? `${r.cancelled} recalled, ${r.tooLate.length} had already gone`
+      : `${r.cancelled} recalled — none of them arrived`);
+    render();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function refreshHistory(sessionId) {
+  if (!sessionId) return;
+  try {
+    const { history } = await api(`/v1/fleet/${encodeURIComponent(sessionId)}/history?limit=30`);
+    state.history[sessionId] = history;
+    render();
+  } catch {
+    // The rest of the panel is still useful without it.
+  }
+}
+
 function selectByIndex(n) {
   // `visible()`, not `active()`: the number you press is the number you can
   // see beside the row.
@@ -349,6 +394,7 @@ function onKey(e) {
   if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); return bumpSize(1); }
   if (mod && e.key === '-') { e.preventDefault(); return bumpSize(-1); }
   if (mod && e.key === '0') { e.preventDefault(); return setLook({ size: 'M' }); }
+  if (mod && e.key.toLowerCase() === 'z' && state.undo) { e.preventDefault(); return undoBulk(); }
   if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); return mediaCommand('play-pause'); }
   if (mod && e.shiftKey && e.key === 'ArrowRight') { e.preventDefault(); return mediaCommand('next'); }
   if (mod && e.shiftKey && e.key === 'ArrowLeft') { e.preventDefault(); return mediaCommand('previous'); }
@@ -930,6 +976,17 @@ function panel(s) {
         h('span', { class: 'b' }, rl?.status ?? '—')),
       h('div', { class: 'note' }, rl?.resetsAt ? `resets in ${ago(rl.resetsAt - Date.now())} · shared by every session` : 'no reading yet')),
 
+    state.history[s.id]?.length
+      ? h('div', { class: 'sect' },
+          h('div', { class: 'h' }, 'What happened'),
+          h('ol', { class: 'timeline' },
+            state.history[s.id].slice(0, 14).map((e) =>
+              h('li', { class: `tl ${e.actor}` },
+                h('span', { class: 'when' }, ago(Date.now() - e.at)),
+                h('span', { class: `dot ${e.tone}`, 'aria-hidden': 'true' }),
+                h('span', { class: 'what' }, e.text)))))
+      : null,
+
     h('div', { class: 'sect' },
       h('div', { class: 'h' }, 'Your note'),
       note,
@@ -1064,6 +1121,9 @@ const KEYS = [
     ['Is this helping?', ['⌘⇧?']],
     ['Close anything open', ['esc']],
   ]],
+  ['Groups', 'ac', [
+    ['Undo a group action', ['⌘Z']],
+  ]],
   ['Whatever is playing', 'ft', [
     ['Play / pause', ['⌘P']],
     ['Next / previous track', ['⌘⇧→', '⌘⇧←']],
@@ -1174,10 +1234,19 @@ function bulkOverlay() {
         body: JSON.stringify({ tag: b.tag, verb: 'send', payload: { text: value } }),
       });
       // "queued", never "sent" — the guarantee holds harder here, where one
-      // click stands for a dozen messages.
-      toast(`${r.queued} queued${r.failed ? `, ${r.failed} failed` : ''}`);
+      // click stands for a dozen messages. And while they are still queued,
+      // this is genuinely undoable, so the offer is real rather than polite.
+      state.undo = {
+        ids: r.results.filter((x) => x.ok).map((x) => x.commandId),
+        label: `${r.queued} message${r.queued === 1 ? '' : 's'} to ${b.tag}`,
+      };
+      toast(`${r.queued} queued${r.failed ? `, ${r.failed} failed` : ''} — ⌘Z to undo`);
       state.bulk = null;
       closeOverlay();
+      // The window is short by design: once a poll delivers them, undo would
+      // be a lie.
+      clearTimeout(run.undoTimer);
+      run.undoTimer = setTimeout(() => { state.undo = null; render(); }, 30_000);
     } catch (err) {
       toast(err.message);
     }
@@ -1403,6 +1472,8 @@ function render() {
   const app = document.getElementById('app');
   if (!state.token) return app.replaceChildren(pairView());
 
+  historyForSelection();
+
   const focused = document.activeElement;
   const focusId = focused && ['INPUT', 'TEXTAREA'].includes(focused.tagName) ? focused.id : null;
   const caret = focusId ? [focused.selectionStart, focused.selectionEnd] : null;
@@ -1416,8 +1487,15 @@ function render() {
           : h('div', { class: 'centre' }, h('div', { class: 'term dim' }, 'No sessions yet.')),
         s ? panel(s) : null);
 
+  const undoBar = state.undo
+    ? h('div', { class: 'undobar', role: 'status' },
+        h('span', {}, `${state.undo.label} queued`),
+        h('span', pressable({ class: 'tr-b', style: 'width:auto;padding:0 9px', 'aria-label': 'Undo, recalling anything not yet delivered' },
+          () => undoBulk()), 'Undo ⌘Z'))
+    : null;
+
   const overlay = { palette: paletteOverlay, keys: keysOverlay, look: lookOverlay, stats: statsOverlay, bulk: bulkOverlay }[state.overlay];
-  app.replaceChildren(topBar(), body, ...(overlay ? overlay() : []));
+  app.replaceChildren(topBar(), body, ...(undoBar ? [undoBar] : []), ...(overlay ? overlay() : []));
 
   if (focusId) {
     const restored = document.getElementById(focusId);

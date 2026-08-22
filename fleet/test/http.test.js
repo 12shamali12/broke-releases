@@ -842,3 +842,63 @@ test('a device touch can be waited for, so shutdown cannot outrun it', async () 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('a group action can be undone while it is still queued', async () => {
+  // Real undo, not a courtesy: a command lives in the queue until a poll
+  // delivers it, so for that window removing it means it never happened.
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    const sent = await h.call('/v1/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ lane: 'blocked', verb: 'send', payload: { text: 'oops' } }),
+    }).then((r) => r.json());
+
+    const ids = sent.results.filter((r) => r.ok).map((r) => r.commandId);
+    assert.ok(ids.length);
+
+    const undone = await h.call('/v1/bulk/undo', {
+      method: 'POST', body: JSON.stringify({ commandIds: ids }),
+    }).then((r) => r.json());
+
+    assert.equal(undone.cancelled, ids.length);
+    assert.deepEqual(undone.tooLate, []);
+    assert.match(undone.note, /nothing arrived/i);
+    assert.equal(h.queue.all.length, 0, 'and it is really gone, not just marked');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('undo says what it could not recall rather than reporting a clean success', async () => {
+  const h = await harness({ withTags: true });
+  try {
+    await h.poller.tick();
+    const sent = await h.call(`/v1/fleet/${SESSION_ID}/send`, {
+      method: 'POST', body: JSON.stringify({ text: 'already gone' }),
+    }).then((r) => r.json());
+
+    // Deliver it, so it is past the point of recall.
+    await h.poller.drainCommands();
+
+    const undone = await h.call('/v1/bulk/undo', {
+      method: 'POST', body: JSON.stringify({ commandIds: [sent.command.id, 'not-a-real-id'] }),
+    }).then((r) => r.json());
+
+    assert.equal(undone.cancelled, 0);
+    assert.equal(undone.tooLate.length, 2);
+    assert.match(undone.note, /cannot be recalled/);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('undo needs something to undo', async () => {
+  const h = await harness({ withTags: true });
+  try {
+    const res = await h.call('/v1/bulk/undo', { method: 'POST', body: JSON.stringify({}) });
+    assert.equal(res.status, 400);
+  } finally {
+    await h.cleanup();
+  }
+});
