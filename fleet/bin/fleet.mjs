@@ -68,6 +68,31 @@ async function api(path, options = {}) {
   return body;
 }
 
+/**
+ * Like `api`, but a 409 comes back as data.
+ *
+ * "This machine has no media backend" is a fact about the laptop, not a
+ * failure of the command — and printing how to fix it beats exiting non-zero
+ * with the same sentence on stderr.
+ */
+async function apiTolerating(status, path, options = {}) {
+  const auth = await token();
+  if (!auth) die('not paired — start fleetd, then run: fleet pair <code>');
+  let res;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...options,
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${auth}`, ...(options.headers ?? {}) },
+    });
+  } catch {
+    die(`cannot reach fleetd at ${BASE} — is it running?`);
+  }
+  const body = await res.json().catch(() => null);
+  if (res.status === status) return { soft: body?.error ?? 'unavailable' };
+  if (!res.ok) die(body?.error ?? `${res.status} ${res.statusText}`);
+  return body;
+}
+
 function die(message) {
   console.error(`${C.ac}fleet:${C.off} ${message}`);
   process.exit(1);
@@ -235,6 +260,36 @@ switch (command) {
     break;
   }
 
+  case 'media':
+  case 'play':
+  case 'pause':
+  case 'next':
+  case 'prev': {
+    const verb = { play: 'play-pause', pause: 'play-pause', next: 'next', prev: 'previous' }[command];
+    const m = verb
+      ? await apiTolerating(409, `/v1/media/${verb}`, { method: 'POST' })
+      : await api('/v1/media');
+
+    if (m.soft) {
+      console.log(`${C.dim}${m.soft}${C.off}`);
+      break;
+    }
+    if (!m.available) {
+      // Not an error exit: the machine simply cannot do this, and saying how to
+      // fix it is more use than a non-zero status.
+      console.log(`${C.dim}${m.reason}${C.off}`);
+      break;
+    }
+    if (!m.playing) {
+      console.log(`${C.dim}nothing playing · ${m.label}${C.off}`);
+      break;
+    }
+    const mark = m.playing.status === 'playing' ? '▶' : '⏸';
+    console.log(` ${C.ok}${mark}${C.off} ${m.playing.title ?? '—'}`);
+    console.log(`   ${C.dim}${[m.playing.artist, m.playing.album, m.playing.player].filter(Boolean).join(' · ')}${C.off}`);
+    break;
+  }
+
   case 'open': {
     const s = await resolve(rest[0] ?? die('usage: fleet open <ref>'));
     console.log(`https://claude.ai/code/${s.id}`);
@@ -288,6 +343,8 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet snooze <ref> [hours]  mute alerts (default 4h, max 72)
   fleet wake <ref>            un-snooze
   fleet open <ref>            print the claude.ai URL
+  fleet media                 what is playing on the laptop
+  fleet play|pause|next|prev  drive it
   fleet queue                 the command queue
   fleet watch                 live tail of transitions
   fleet pair <code>           once, against a running fleetd

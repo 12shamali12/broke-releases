@@ -31,6 +31,7 @@ const state = {
   look: { ...LOOK_DEFAULT, ...store.get(LS.look, {}) },
   changed: new Set(),       // session ids that just transitioned
   drafts: {},               // per-session composer text, survives re-render
+  media: null,              // null until probed; then { available, playing, … }
 };
 
 // ---------------------------------------------------------------- api
@@ -328,6 +329,9 @@ function onKey(e) {
   if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); return bumpSize(1); }
   if (mod && e.key === '-') { e.preventDefault(); return bumpSize(-1); }
   if (mod && e.key === '0') { e.preventDefault(); return setLook({ size: 'M' }); }
+  if (mod && e.key.toLowerCase() === 'p') { e.preventDefault(); return mediaCommand('play-pause'); }
+  if (mod && e.shiftKey && e.key === 'ArrowRight') { e.preventDefault(); return mediaCommand('next'); }
+  if (mod && e.shiftKey && e.key === 'ArrowLeft') { e.preventDefault(); return mediaCommand('previous'); }
   if (mod && e.key.toLowerCase() === 'm') { e.preventDefault(); state.menu = state.menu === 'model' ? null : 'model'; return render(); }
   if (mod && e.key.toLowerCase() === 'e') { e.preventDefault(); state.menu = state.menu === 'effort' ? null : 'effort'; return render(); }
   if (mod && e.key.toLowerCase() === 'l') { e.preventDefault(); return document.getElementById('composer')?.focus(); }
@@ -361,6 +365,39 @@ function sendComposer() {
   delete state.drafts[s.id];
   box.value = '';
   box.style.height = 'auto';
+}
+
+// ---------------------------------------------------------------- media
+
+/**
+ * Poll the transport, but only while it is worth polling.
+ *
+ * A machine with no backend is asked once and never again — the answer cannot
+ * change without restarting fleetd — and a hidden tab is not polled at all,
+ * because a background tab spawning a process on the laptop every few seconds
+ * to learn the same track title is a battery bug, not a feature.
+ */
+async function refreshMedia() {
+  if (state.media && !state.media.available) return;
+  if (document.visibilityState !== 'visible') return;
+  try {
+    const next = await api('/v1/media');
+    const before = JSON.stringify(state.media);
+    state.media = next;
+    if (JSON.stringify(next) !== before) render();
+  } catch {
+    // fleetd unreachable is already shown by the connection pill; the
+    // transport keeping its last state is better than it blinking away.
+  }
+}
+
+async function mediaCommand(verb) {
+  try {
+    state.media = await api(`/v1/media/${verb}`, { method: 'POST' });
+    render();
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 // ---------------------------------------------------------------- overlays
@@ -437,6 +474,22 @@ function paletteItems() {
       group: 'This session', glyph: '↯', tone: 'ac', title: 'Compact the context', sub: 'summarise history',
       run: () => { dispatch(s.id, 'compact', {}); closeOverlay(); },
     });
+  }
+
+  // Media only appears when the laptop can actually do it. A palette entry
+  // that always fails is worse than one that is simply not there — the palette
+  // is where people go to find out what is possible.
+  if (state.media?.available) {
+    const playing = state.media.playing;
+    rows.push(
+      { group: 'Playing', glyph: playing?.status === 'playing' ? '⏸' : '▶', tone: 'ft',
+        title: playing?.status === 'playing' ? 'Pause' : 'Play', sub: playing ? `${playing.title} · ${playing.artist ?? ''}`.trim() : state.media.label,
+        run: () => { mediaCommand('play-pause'); closeOverlay(); } },
+      { group: 'Playing', glyph: '⏭', tone: 'ft', title: 'Next track', sub: '⌘⇧→',
+        run: () => { mediaCommand('next'); closeOverlay(); } },
+      { group: 'Playing', glyph: '⏮', tone: 'ft', title: 'Previous track', sub: '⌘⇧←',
+        run: () => { mediaCommand('previous'); closeOverlay(); } },
+    );
   }
 
   rows.push(
@@ -522,12 +575,60 @@ function rail() {
         ];
       })),
 
-    h('div', { style: 'flex-shrink:0;border-top:1px solid var(--bd);padding:8px 11px;background:var(--s2);display:flex;align-items:center;gap:9px' },
-      svg('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
-        'ico', ), h('div', { style: 'flex-grow:1;min-width:0' },
-        h('div', { style: 'font-size:11px;font-weight:600' }, 'Nothing playing'),
-        h('div', { style: 'font-size:9.5px;color:var(--dm)' }, 'media needs fleetd on this machine')),
-      h('span', { class: 'k', style: 'font-family:var(--mono);font-size:9px;color:var(--ft);border:1px solid var(--bd);border-radius:2px;padding:1px 4px' }, '⌘P')));
+    transport());
+}
+
+/**
+ * The rail's transport.
+ *
+ * Three states, and each says what is true rather than what would look tidy:
+ * no backend on the laptop (with what to install), a backend but nothing
+ * playing, or a track with working buttons. The dimmed-with-a-reason case is
+ * the same rule the session controls follow — an action you cannot take should
+ * never look like one you can.
+ */
+function transport() {
+  const m = state.media;
+  const wrap = (...kids) => h('div', {
+    class: 'transport',
+    role: 'group',
+    'aria-label': 'Media',
+  }, ...kids);
+
+  const note = svg('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>', 'ico');
+  const hint = h('span', { class: 'k', style: 'font-family:var(--mono);font-size:9px;color:var(--ft);border:1px solid var(--bd);border-radius:2px;padding:1px 4px' }, '⌘P');
+
+  if (!m) {
+    return wrap(note, h('div', { style: 'flex-grow:1;min-width:0' },
+      h('div', { class: 'tr-t' }, 'Media'),
+      h('div', { class: 'tr-s' }, 'checking this machine…')), hint);
+  }
+
+  if (!m.available) {
+    return wrap(note, h('div', { style: 'flex-grow:1;min-width:0' },
+      h('div', { class: 'tr-t' }, 'Media unavailable'),
+      h('div', { class: 'tr-s', title: m.reason }, m.reason)));
+  }
+
+  const playing = m.playing;
+  const paused = playing?.status !== 'playing';
+
+  const key = (glyph, verb, label) =>
+    h('span', pressable({
+      class: 'tr-b',
+      'aria-label': label,
+      'aria-disabled': playing ? null : 'true',
+    }, () => { if (playing) mediaCommand(verb); }), glyph);
+
+  return wrap(note,
+    h('div', { style: 'flex-grow:1;min-width:0' },
+      h('div', { class: 'tr-t' }, playing?.title ?? 'Nothing playing'),
+      h('div', { class: 'tr-s' },
+        playing ? [playing.artist, playing.player].filter(Boolean).join(' · ') : m.label)),
+    h('div', { class: 'tr-keys' },
+      key('⏮', 'previous', 'Previous track'),
+      key(paused ? '▶' : '⏸', 'play-pause', paused ? 'Play' : 'Pause'),
+      key('⏭', 'next', 'Next track')));
 }
 
 function railRow(s, index) {
@@ -852,6 +953,11 @@ const KEYS = [
     ['This sheet', ['⌘/', 'hot']],
     ['Close anything open', ['esc']],
   ]],
+  ['Whatever is playing', 'ft', [
+    ['Play / pause', ['⌘P']],
+    ['Next / previous track', ['⌘⇧→', '⌘⇧←']],
+    ['Mute alerts for this session', ['⌘⇧S']],
+  ]],
 ];
 
 function keysOverlay() {
@@ -1044,7 +1150,16 @@ document.addEventListener('click', (e) => {
 if (state.token) {
   refresh().catch(() => render());
   connect();
+  refreshMedia();
 }
+
+// Track changes are the one thing here with no event to push them, so this is
+// the only genuine poll in the client. It stops itself when there is no
+// backend, and `refreshMedia` skips a hidden tab.
+setInterval(refreshMedia, 6_000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshMedia();
+});
 // Only refresh relative timestamps when nobody is mid-interaction. The caret
 // restore above makes this safe, but not interrupting at all is better still.
 setInterval(() => {

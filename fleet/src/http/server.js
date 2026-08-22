@@ -11,6 +11,7 @@ import { bearerFrom } from './auth.js';
 import { EventLog, StreamHub } from './events.js';
 import { createStaticHandler } from './static.js';
 import { createMcpHandler, handleBatch } from './mcp.js';
+import { VERBS as MEDIA_VERBS } from '../media.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const VERBS = new Set(['send', 'model', 'effort', 'compact', 'rename']);
@@ -102,7 +103,7 @@ export function matchSessions(fleet, query) {
   );
 }
 
-export function createFleetServer({ poller, queue, devices, push = null, snooze = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
+export function createFleetServer({ poller, queue, devices, push = null, snooze = null, media = null, log = new EventLog(), hub = null, webRoot = null, cockpitRoot = null }) {
   const streamHub = hub ?? new StreamHub({ log });
   // The app shell loads before a token exists — the pairing screen needs it.
   const serveStatic = webRoot ? createStaticHandler({ root: webRoot }) : null;
@@ -215,6 +216,34 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
       if (method === 'DELETE') {
         return send(res, 200, { woken: await snooze.wake(sessionId) });
       }
+    }
+
+    // --- media ---
+    //
+    // The transport is the one part of Fleet that controls the laptop rather
+    // than a session, which is exactly why it lives in fleetd: no web page can
+    // pause what is playing, and the machine it is playing on is right here.
+
+    if (path === '/v1/media') {
+      if (!media) throw new HttpError(503, 'media control is not configured');
+      // Never a 5xx for "no backend on this machine" — that is a fact about the
+      // laptop, not a failure, and the clients render it as a reason.
+      return send(res, 200, await media.status());
+    }
+
+    if (segments[0] === 'v1' && segments[1] === 'media' && segments[2] && method === 'POST') {
+      if (!media) throw new HttpError(503, 'media control is not configured');
+      const verb = decodeURIComponent(segments[2]);
+      if (!MEDIA_VERBS.includes(verb)) {
+        throw new HttpError(400, `media verb must be one of: ${MEDIA_VERBS.join(', ')}`);
+      }
+      try {
+        await media.command(verb);
+      } catch (err) {
+        // 409: the request was well-formed, the machine just cannot do it.
+        throw new HttpError(409, err.message);
+      }
+      return send(res, 200, await media.status());
     }
 
     // --- push ---

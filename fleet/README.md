@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 135 tests, no network, no CLI, no credentials
+npm test                        # 165 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 npm run spike                   # phase 01 — run this on the laptop (see below)
@@ -56,6 +56,8 @@ GET    /v1/push/key                  the VAPID public key
 POST   /v1/push/subscribe            {endpoint, keys}
 DELETE /v1/push/subscribe            {endpoint}
 POST   /v1/push/test                 a real notification, end to end
+GET    /v1/media                     what is playing on the laptop, or why not
+POST   /v1/media/:verb               play-pause | next | previous | volume-up/down
 ```
 
 ## The MCP face
@@ -136,6 +138,7 @@ src/http/server.js      routing, validation, auth gate
 src/http/static.js      serves the app; traversal is contained, not guessed at
 src/http/mcp.js         the MCP face: JSON-RPC, ten tools, same auth
 src/snooze.js           per-session alert mute, expiring, never hiding
+src/media.js            the transport: playerctl on Linux, AppleScript on macOS
 src/atomic.js           write-then-rename, unique per write, shared by all four stores
 src/push/crypto.js      RFC 8291 + 8188 + 8292, from the specs, no deps
 src/push/index.js       subscriptions, delivery, quiet hours
@@ -214,6 +217,40 @@ because an indefinite mute is how a session goes quiet forever. And
 `command.failed` is never suppressed: snooze is a statement about a session's
 own noise, not permission to lose a message you asked to send.
 
+## The transport
+
+The designs put media controls in the cockpit's rail, and building them is the
+clearest illustration of why fleetd exists. Spotify's connector is read-only
+and YouTube has no playback API, so no web page can pause what you are
+listening to — but the machine it is playing on is the same machine fleetd runs
+on, and that machine already knows how.
+
+So this drives the platform's own media control rather than a service API,
+which has the useful side effect of working for whatever is playing.
+
+| | | |
+|---|---|---|
+| **Linux** | `playerctl` (MPRIS) | every serious player on the platform |
+| **macOS** | AppleScript | Spotify and Music; a browser tab is out of reach |
+| **Windows** | — | absent rather than half-working; it needs a helper binary |
+
+Two things it gets right that are easy to get wrong:
+
+**Detecting the tool is not detecting that it works.** `playerctl --version`
+succeeds on a machine with no session bus, and then every button fails with
+`Cannot autolaunch D-Bus`. The probe makes a real call instead, and tells the
+bus error apart from the ordinary "nothing is playing" — which must *not*
+disable the controls. Found by running it on a headless box, not by reasoning
+about it.
+
+**macOS talks to the app, not to the keyboard.** Synthesising an F8 keypress
+through System Events silently does nothing until the person grants
+accessibility permission, and a control that quietly does nothing is worse than
+one that says it cannot help.
+
+When there is no backend, both clients render the transport dimmed with the
+reason attached — the same rule the session controls follow.
+
 ## Known gap: the rate-limit percentage
 
 The designs show the five-hour window as a percentage bar. The payload does not
@@ -231,4 +268,5 @@ first is a design change; the second is real work. Undecided — see
 - [x] 03 HTTP + SSE + device auth — **tunnel and Access still to wire up**
 - [x] 04 The PWA
 - [x] 05 The cockpit — keyboard-first, command palette, appearance
-- [x] 06 MCP face — nine tools over JSON-RPC
+- [x] 06 MCP face — ten tools over JSON-RPC
+- [x] 07 Snooze, media transport, accessibility pass on both clients

@@ -406,6 +406,30 @@ kbd.hot { color: var(--ac); background: var(--acf); border-color: var(--acb); }
 }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
+/* ---------------- transport ---------------- */
+.transport {
+  flex-shrink: 0; border-top: 1px solid var(--bd); padding: 8px 11px;
+  background: var(--s2); display: flex; align-items: center; gap: 9px;
+}
+.tr-t {
+  font-size: 11px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tr-s {
+  font-size: 9.5px; color: var(--dm); margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tr-keys { display: flex; gap: 3px; flex-shrink: 0; }
+.tr-b {
+  width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--bd); border-radius: 2px; font-size: 10px;
+  color: var(--dm); cursor: pointer; user-select: none;
+}
+.tr-b:hover { background: var(--s1); color: var(--tx); border-color: var(--bd2); }
+/* Nothing is playing, so the buttons say so instead of pretending. */
+.tr-b[aria-disabled="true"] { opacity: .38; cursor: default; }
+.tr-b[aria-disabled="true"]:hover { background: none; color: var(--dm); border-color: var(--bd); }
+
 /* ---- keyboard ----
    This cockpit's premise is that nothing needs the mouse, which only holds if
    you can see where you are. The ring is inset on rows and options so it does
