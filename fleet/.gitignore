@@ -1,3 +1,4 @@
 node_modules/
 fleet.config.json
+.state/
 *.log

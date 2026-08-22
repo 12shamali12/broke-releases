@@ -2,17 +2,62 @@
 
 One console for every Claude Code session: poll, diff, notify, control.
 
-This is **phase 02 of the [design spec](https://claude.ai/code/artifact/f2ea689f-ac2e-4021-8972-2904a8f8db6b)** — the
-core, with no network face yet. It holds a correct model of the fleet, detects
-the transitions worth telling you about, and delivers commands without losing
-them. The HTTP and MCP faces come next, and both clients are built against
-[these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
+**Phases 02 and 03 of the [design spec](https://claude.ai/code/artifact/f2ea689f-ac2e-4021-8972-2904a8f8db6b)**:
+the core, and the network face over it. It holds a correct model of the fleet,
+detects the transitions worth telling you about, delivers commands without
+losing them, and serves all of that over authenticated HTTP with a live stream.
+Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test          # 43 tests, no network, no CLI, no credentials
-npm run demo      # watch the core run against fixtures
-npm run spike     # phase 01 — run this on the laptop (see below)
+npm test                        # 64 tests, no network, no CLI, no credentials
+npm run demo                    # watch the core run against fixtures
+node bin/fleetd.mjs --fixture   # the real daemon, on fixtures
+npm run spike                   # phase 01 — run this on the laptop (see below)
 ```
+
+## The API
+
+Loopback only. `/v1/health` and `/v1/pair` are open; everything else needs a
+device token.
+
+```
+GET    /v1/health                    liveness; detail only when authenticated
+POST   /v1/pair                      {code} -> {token}, once per window
+GET    /v1/fleet                     board + counts + health (staleness)
+GET    /v1/fleet/:id                 one session + its queued commands
+POST   /v1/fleet/:id/send            {text}
+POST   /v1/fleet/:id/model           {model}
+POST   /v1/fleet/:id/effort          {effort}
+POST   /v1/fleet/:id/compact         {focus?}
+POST   /v1/fleet/:id/rename          {title}
+GET    /v1/stream                    SSE: snapshot, then live events
+GET    /v1/events?since=<cursor>     replay, with a truncation flag
+GET    /v1/search?q=
+GET    /v1/commands                  the queue, with delivery state
+POST   /v1/commands/:id/retry
+DELETE /v1/commands/:id
+GET    /v1/devices
+DELETE /v1/devices/:id               revoke one phone, nothing else
+```
+
+Writes return **202, not 200** — the command is queued, and the response says
+whether the session is reachable. Reporting a queued command as done is exactly
+how a message ends up silently never sent.
+
+## SSE instead of WebSocket
+
+The spec said WebSocket. This ships Server-Sent Events, deliberately:
+
+- The traffic is one-directional. Every client→server action is already a REST
+  POST, so the socket only ever pushed.
+- Reconnection is built into `EventSource`, and it resumes with `Last-Event-ID`
+  — the same cursor as `GET /v1/events?since=`. One replay path serves cold
+  start, reconnect and catch-up.
+- It is plain HTTP, so it crosses Cloudflare Tunnel and Access with no upgrade
+  handshake to configure, and needs no dependency to serve.
+
+`x-accel-buffering: no` is set because Cloudflare and nginx both buffer by
+default, which would hold every event until the response closed.
 
 ## Run the spike first
 
@@ -48,6 +93,9 @@ src/diff.js             two snapshots -> events, with the notification policy
 src/queue.js            durable command queue: retry, backoff, never silent
 src/poller.js           the loop that joins them
 src/adapters/           the only code that talks to Anthropic
+src/http/auth.js        per-device tokens, stored hashed
+src/http/events.js      the event log and the SSE hub
+src/http/server.js      routing, validation, auth gate
 fixtures/               synthetic snapshots — see "Fixtures" below
 ```
 
@@ -92,7 +140,7 @@ first is a design change; the second is real work. Undecided — see
 - [x] 00 Design — spec + 18 interface artboards
 - [ ] 01 Spike the adapter — **needs the laptop**
 - [x] 02 Core — model, diff, queue, poller, adapters
-- [ ] 03 REST + WebSocket + tunnel + Access
+- [x] 03 HTTP + SSE + device auth — **tunnel and Access still to wire up**
 - [ ] 04 The PWA
 - [ ] 05 The cockpit
 - [ ] 06 MCP face
