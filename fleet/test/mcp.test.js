@@ -479,3 +479,72 @@ test('a subsystem that is not configured says so rather than failing oddly', asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * A fleet of exactly two unreachable sessions, for the one distinction that
+ * decides whether a write is held or refused.
+ *
+ * Built here rather than added to the shared fixture: this needs a session
+ * with no cloud id, and the shared fixture's counts are asserted by a dozen
+ * other tests.
+ */
+const REACH_SNAPSHOT = [[
+  {
+    id: 'session_01FIXTUREdisconnectedbbb',
+    title: 'Asleep',
+    session_status: 'SESSION_STATUS_IDLE',
+    status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED',
+    updated_at: '2026-08-22T10:30:00Z',
+    environment_kind: 'bridge',
+    connection_status: 'disconnected',
+    session_context: { model: 'claude-opus-5' },
+  },
+  {
+    id: 's-local',
+    title: 'On this laptop',
+    session_status: 'SESSION_STATUS_IDLE',
+    status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED',
+    updated_at: '2026-08-22T10:30:00Z',
+    environment_kind: 'local',
+    connection_status: 'connected',
+    // No cloud session id: readable, and impossible to write to.
+    addressable: false,
+    session_context: { model: 'claude-opus-5' },
+  },
+]];
+
+test('MCP refuses a message a session can never receive, as HTTP does', async () => {
+  // The two faces disagreed. `POST /v1/fleet/:id/send` has refused a
+  // watch-only session with 409 since the day the distinction was understood
+  // — held and impossible are not the same thing — while `fleet_send` queued
+  // it and answered "queued: true". An agent was told the message was on its
+  // way; five retries later the person got a failure notification for
+  // something that was never deliverable.
+  const r = await rig({ snapshots: REACH_SNAPSHOT });
+  try {
+    const result = await r.tool('fleet_send', { sessionId: 's-local', text: 'hello' });
+    assert.equal(result.isError, true, 'a write with nowhere to go is refused, not accepted');
+    assert.match(result.content[0].text, /cloud session id|cannot message it/i);
+    assert.equal(r.queue.all.length, 0, 'and nothing is left in the queue to retry');
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test('a merely disconnected session still queues, and says which it is', async () => {
+  // The other half of the same distinction: this one may wake up, so its
+  // command waits — and the note names the situation rather than reciting the
+  // disconnected-bridge reason at every unreachable session alike.
+  const r = await rig({ snapshots: REACH_SNAPSHOT });
+  try {
+    const result = await r.tool('fleet_send', { sessionId: 'session_01FIXTUREdisconnectedbbb', text: 'hello' });
+    assert.ok(!result.isError, 'a held command is not an error');
+    const body = JSON.parse(result.content[0].text);
+    assert.equal(body.queued, true);
+    assert.equal(body.reachable, false);
+    assert.match(body.note, /held, not lost/);
+    assert.match(body.note, /disconnected/, 'the label, not a one-size sentence');
+  } finally {
+    await r.cleanup();
+  }
+});

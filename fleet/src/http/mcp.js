@@ -291,6 +291,19 @@ export function createMcpHandler({ poller, queue, snooze = null, tags = null, me
   async function enqueue(args, verb, payload, origin) {
     const id = need(args, 'sessionId');
     const s = session(id);
+
+    // Held and impossible are not the same thing, and this face was treating
+    // them as one. A disconnected session may wake up, so its command waits.
+    // A session with no cloud id can never be written to at all — the HTTP
+    // route has refused those with a 409 since the day that was understood,
+    // and this one queued them anyway. An agent asking over MCP was told
+    // "queued", and five retries later the person got a failure notification
+    // for a message that was never deliverable.
+    if (s.reachLabel === 'watch only') {
+      throw new RpcError(ERR.INVALID_PARAMS, s.reachableReason
+        ?? 'This session can be read but not messaged: it has no cloud session id.');
+    }
+
     const command = await queue.enqueue({ sessionId: id, verb, payload, origin });
     return {
       queued: true,
@@ -300,7 +313,8 @@ export function createMcpHandler({ poller, queue, snooze = null, tags = null, me
       // failure this whole system is built to avoid.
       note: s.reachable
         ? 'Queued. It will be delivered on the next poll; it has not been delivered yet.'
-        : 'Queued, but this session is unreachable — only the machine hosting it can revive it. The command is held, not lost.',
+        : `Queued, but this session is ${s.reachLabel ?? 'unreachable'} — ${
+            s.reachableReason ?? 'it cannot be written to right now'} The command is held, not lost.`,
     };
   }
 
