@@ -127,3 +127,58 @@ test('the README does not undercount the test suite', async () => {
     `the README claims ${claimed} tests; there are at least ${literal} written down`,
   );
 });
+
+/**
+ * This repository is public.
+ *
+ * Its README publishes a raw.githubusercontent.com URL that SideStore reads,
+ * so everything here is world-readable and stays that way in the git history
+ * even if it is deleted later. The rule has been stated in prose since the
+ * project started and never enforced: every fixture is fabricated, and no real
+ * session id, title, status line or transcript is committed.
+ *
+ * Prose does not survive a hurried afternoon. This does.
+ */
+test('every committed session id is obviously fabricated', async () => {
+  const marked = /^session_01(FIXTURE|FAKE|DEMO|TEST|[A-Z]{3,8}$)/;
+  const short = /^(s-|x$|a$|b$|c$)/;
+  const files = [
+    ...(await readdir(join(ROOT, 'fixtures'))).map((f) => join('fixtures', f)),
+  ];
+
+  for (const rel of files) {
+    if (!rel.endsWith('.json')) continue;
+    const ids = new Set();
+    const walk = (node) => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (node && typeof node === 'object') {
+        if (typeof node.id === 'string') ids.add(node.id);
+        Object.values(node).forEach(walk);
+      }
+    };
+    walk(JSON.parse(await readFile(join(ROOT, rel), 'utf8')));
+
+    for (const id of ids) {
+      assert.ok(
+        marked.test(id) || short.test(id),
+        `${rel} contains "${id}", which does not look fabricated. This repository is public: `
+        + 'a real session id, once committed, is in the history forever.',
+      );
+    }
+  }
+});
+
+test('nothing committed carries a real home directory or account name', async () => {
+  // The kind of thing that arrives by pasting a debug dump into a fixture.
+  const suspicious = /\/(Users|home)\/(?!dev\b|user\b)[a-z][a-z0-9_-]{2,}\//i;
+  const dirs = ['fixtures', 'src', 'web', 'web-cockpit', 'bin'];
+  for (const dir of dirs) {
+    for (const file of await readdir(join(ROOT, dir), { recursive: true, withFileTypes: true })) {
+      if (!file.isFile()) continue;
+      const path = join(file.parentPath ?? file.path, file.name);
+      const src = await readFile(path, 'utf8').catch(() => '');
+      const hit = suspicious.exec(src);
+      assert.equal(hit, null, `${path} contains a real-looking home directory: ${hit?.[0]}`);
+    }
+  }
+});
