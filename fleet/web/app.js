@@ -805,7 +805,7 @@ function viewSession() {
       h('div', { class: 'card' },
         h('div', { style: 'display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px;color:var(--dm)' },
           h('span', {}, 'Context'),
-          h('span', { style: 'font-family:var(--mono)' }, ctx.known ? ctx.label : 'not readable yet')),
+          h('span', { style: 'font-family:var(--mono)' }, ctx.known ? ctx.label : 'no reading yet')),
         // The percentage is already stated above, so the bar itself is
         // decorative here — announcing it twice is noise, not access.
         h('div', { class: `meter${ctx.hot ? ' hot' : ''}${ctx.known ? '' : ' unknown'}`, 'aria-hidden': 'true' }, h('i', { style: `width:${ctx.pct}%` }))),

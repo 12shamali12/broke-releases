@@ -210,6 +210,25 @@ export function readTranscript(lines) {
   };
 }
 
+/**
+ * How much of the context window this session is currently holding.
+ *
+ * The CLI writes its own accounting into every assistant entry, and the three
+ * input figures together are exactly the conversation the model just read:
+ * `input_tokens` is what was not cached, `cache_read_input_tokens` is what was,
+ * and `cache_creation_input_tokens` is what was newly written to the cache.
+ * Adding the turn's output gives what the next prompt will carry.
+ *
+ * This is the number the context meter never had. Every client computed
+ * `(contextUsed ?? 0) / contextMax` against a field nothing set, so the bar has
+ * read 0% — "plenty of room left" — for every session since it was added.
+ * Checked against a real session mid-conversation: 588,641 tokens, 59% of a 1M
+ * window, which is what that session had actually used.
+ *
+ * Self-correcting across a compaction: the next turn's usage reflects the
+ * smaller context, so the meter falls on its own without needing to see the
+ * `compact_boundary` entry at all.
+ */
 function tokensFrom(usage) {
   const input = Number(usage.input_tokens) || 0;
   const cacheRead = Number(usage.cache_read_input_tokens) || 0;
@@ -389,6 +408,10 @@ export function toRawRecord(agent, transcript, { remote = null, live = true, now
     session_context: {
       model: transcript?.model ?? null,
       cwd: agent.cwd ?? null,
+      // The CLI's own accounting, not an estimate. Null when the transcript
+      // has no usage in it, so the meter says "not readable yet" rather than
+      // drawing an empty bar that reads as "plenty of room".
+      context_used_tokens: transcript?.tokens ?? null,
       // The remote when there is one, so `repo:owner/name` means the same
       // thing on every machine. A local path would group nothing.
       sources: remote ? [{ git_repository: { url: remote } }] : [],

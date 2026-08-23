@@ -30,7 +30,7 @@ comes from the terminal you are sitting at, and every one after it from
 something you have already decided to trust.
 
 ```
-npm test                        # 506 tests, no network, no CLI, no credentials
+npm test                        # 509 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs reach        # how to open it from your phone
@@ -590,6 +590,25 @@ one that says it cannot help.
 
 When there is no backend, both clients render the transport dimmed with the
 reason attached — the same rule the session controls follow.
+
+## The context meter reads the CLI's own accounting
+
+Every assistant turn a session writes carries a `usage` block, and the three
+input figures in it are exactly the conversation the model just read:
+`input_tokens` is what was not cached, `cache_read_input_tokens` is what was,
+`cache_creation_input_tokens` is what was newly cached. Add the turn's output
+and you have what the next prompt will carry.
+
+That is the number the meter draws. It is not an estimate and Fleet does not
+count anything itself — the CLI has been writing it down the whole time.
+
+It also follows a compaction down without being told: the next turn reads a
+smaller context, so the usage on that turn says so. Nothing has to notice the
+`compact_boundary` entry.
+
+A session with no assistant turn yet has no reading, and the meter says so
+rather than drawing an empty bar — which would read as "plenty of room left",
+the opposite of the thing you look at a context meter to learn.
 
 ## Known gap: the rate-limit percentage
 

@@ -905,3 +905,47 @@ test('an error carrying its own sentence is passed through', () => {
     'claude agents --json did not return an array',
   );
 });
+
+
+// ------------------------------------------------- the context meter
+
+test('the context meter finally has a number behind it', () => {
+  // Every client computed `(contextUsed ?? 0) / contextMax` against a field
+  // nothing set, so the bar read 0% — "plenty of room left" — for every
+  // session since it was added. The CLI has been writing its own accounting
+  // into every assistant entry the whole time.
+  const t = readTranscript([entry({
+    message: {
+      model: 'claude-opus-5', stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'Done.' }],
+      usage: {
+        input_tokens: 2,
+        cache_read_input_tokens: 586_695,
+        cache_creation_input_tokens: 835,
+        output_tokens: 1_109,
+      },
+    },
+  })]);
+  const record = toRawRecord({ sessionId: 's-x', cwd: '/home/dev/x' }, t);
+  assert.equal(record.session_context.context_used_tokens, 588_641);
+});
+
+test('a transcript with no accounting in it reports no reading', () => {
+  // Null, not zero: "not readable yet" is true, and an empty bar is a claim.
+  const t = readTranscript([entry()]);
+  const record = toRawRecord({ sessionId: 's-x', cwd: '/home/dev/x' }, t);
+  assert.equal(record.session_context.context_used_tokens, null);
+});
+
+test('the reading follows a compaction down without being told about it', () => {
+  // A compacted session's next turn reads a much smaller context, and the
+  // usage on that turn says so — the meter falls on its own rather than
+  // needing to notice the compact_boundary entry.
+  const big = { input_tokens: 0, cache_read_input_tokens: 780_000, cache_creation_input_tokens: 0, output_tokens: 500 };
+  const small = { input_tokens: 0, cache_read_input_tokens: 17_000, cache_creation_input_tokens: 174, output_tokens: 90 };
+  const t = readTranscript([
+    entry({ message: { model: 'claude-opus-5', content: [{ type: 'text', text: 'before' }], usage: big } }),
+    entry({ message: { model: 'claude-opus-5', content: [{ type: 'text', text: 'after' }], usage: small } }),
+  ]);
+  assert.equal(toRawRecord({ sessionId: 's-x' }, t).session_context.context_used_tokens, 17_264);
+});

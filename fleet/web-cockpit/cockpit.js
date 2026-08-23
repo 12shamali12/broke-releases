@@ -1166,7 +1166,11 @@ function panel(s) {
       h('div', { class: 'budget-row' }, h('span', { class: 'a' }, 'Context'),
         h('span', { class: 'b' }, s.contextMax >= 1e6 ? '1M window' : '200K window')),
       h('div', { class: `meter${ctx.hot ? ' hot' : ''}${ctx.known ? '' : ' unknown'}` }, h('i', { style: `width:${ctx.pct}%` })),
-      h('div', { class: 'note' }, ctx.known ? `${ctx.label} of the window used` : 'fleetd cannot read tokens used yet — see the README'),
+      // No longer an apology: the CLI writes its own token accounting into
+      // every assistant turn, so a session with any conversation in it has a
+      // real reading. "Not reported" is now the exception — a session that
+      // has not answered yet.
+      h('div', { class: 'note' }, ctx.known ? `${ctx.label} of the window used` : 'no reading yet — this session has not answered'),
       h('div', { style: 'height:13px' }),
       h('div', { class: 'budget-row' }, h('span', { class: 'a' }, '5-hour window'),
         h('span', { class: 'b' }, rl?.status ?? '—')),
