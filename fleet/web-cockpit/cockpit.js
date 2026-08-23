@@ -367,6 +367,13 @@ function duration(ms) {
   return `${Math.round(hr / 24)}d`;
 }
 
+/** "updated now ago" reads like a bug because it is one. */
+function freshness(ageMs) {
+  if (ageMs == null) return 'never';
+  const relative = ago(ageMs);
+  return relative === 'now' ? 'just now' : `${relative} ago`;
+}
+
 function toast(text) {
   const el = document.getElementById('toast');
   el.textContent = text;
@@ -845,17 +852,21 @@ function topBar() {
   const counts = f?.counts ?? { blocked: 0, ready: 0, working: 0 };
   const rl = f?.rateLimit;
   const stale = f?.health?.stale || !state.connected;
+  // "offline" without a number is a shrug. The question anyone asks next is
+  // how old the board on the screen is, and the answer is already in hand.
+  const age = state.fleetAt ? Date.now() - state.fleetAt : null;
 
   return h('div', { class: 'top' },
     h('div', { class: 'brand' }, svg('<path d="M3 17l6-6-6-6"/><path d="M12 19h9"/>', 'ico'), 'Fleet'),
     h('div', { class: 'chip' }, h('span', { class: `dot ${stale ? 'ac' : 'ok'}` }),
-      h('span', { style: 'font-family:var(--mono);font-size:10.5px' }, stale ? 'offline' : 'fleetd · live')),
+      h('span', { style: 'font-family:var(--mono);font-size:10.5px' },
+        stale ? `offline · ${age == null ? 'no board yet' : freshness(age)}` : 'fleetd · live')),
     h('div', { style: 'display:flex;gap:6px' },
       [['blocked', 'ac'], ['ready', 'ok'], ['working', 'wk']].map(([lane, tone]) =>
         h('span', { class: 'chip', style: `color:var(--${tone})` },
           h('span', { class: `dot ${tone}` }), `${counts[lane]} ${lane}`))),
     h('span', { class: 'grow' }),
-    rl?.resetsAt
+    rl?.resetsAt > Date.now()
       ? h('div', { class: 'chip' }, h('span', { class: 'lbl' }, '5H'),
           h('span', { class: 'val' }, `resets ${duration(rl.resetsAt - Date.now())}`))
       : null,
@@ -1069,6 +1080,23 @@ function effortMenu(s) {
  * does have is each session's own status line plus every transition it has
  * observed, and showing that honestly beats faking a terminal.
  */
+/**
+ * A transcript timestamp.
+ *
+ * A bare time is ambiguous the moment the list crosses midnight, and this list
+ * routinely does: a session blocked yesterday morning and stalled this morning
+ * showed "11:45:00 AM" beneath "8:03:48 AM" and read as out of order. The date
+ * appears only when it is not today, so the common case stays quiet — and the
+ * whole column is padded to one width so the descriptions still line up.
+ */
+function stamp(at) {
+  const d = new Date(at);
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  const time = d.toLocaleTimeString();
+  return sameDay ? time : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
+}
+
 /** "watch only" as a label, "Watch only" as a heading. */
 const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -1095,9 +1123,11 @@ function transcript(s) {
   }
   if (mine.length) {
     lines.push(['tool', '● observed transitions']);
-    for (const e of mine.slice(0, 40)) {
+    const shown = mine.slice(0, 40);
+    const width = Math.max(...shown.map((e) => stamp(e.at).length));
+    for (const e of shown) {
       lines.push([e.severity === 'push' ? 'warn' : e.severity === 'badge' ? 'ok' : 'dim',
-        `  ${new Date(e.at).toLocaleTimeString()}  ${describe(e)}`]);
+        `  ${stamp(e.at).padStart(width)}  ${describe(e)}`]);
     }
     lines.push(['dim', '']);
   }
@@ -1237,7 +1267,7 @@ function panel(s) {
       h('div', { style: 'height:13px' }),
       h('div', { class: 'budget-row' }, h('span', { class: 'a' }, '5-hour window'),
         h('span', { class: 'b' }, rl?.status ?? '—')),
-      h('div', { class: 'note' }, rl?.resetsAt ? `resets in ${duration(rl.resetsAt - Date.now())} · shared by every session` : 'no reading yet')),
+      h('div', { class: 'note' }, rl?.resetsAt > Date.now() ? `resets in ${duration(rl.resetsAt - Date.now())} · shared by every session` : 'no reading yet')),
 
     state.history[s.id]?.length
       ? h('div', { class: 'sect' },

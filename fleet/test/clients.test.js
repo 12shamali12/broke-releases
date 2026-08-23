@@ -443,7 +443,7 @@ for (const client of CLIENTS) {
  * So the duplication is pinned: both clients must carry the same set, and
  * every one of them has a behavioural test above. This list is the contract.
  */
-const SHARED_HELPERS = ['contextFill', 'composerHint', 'onClaudeAi', 'resumeCommand', 'loadWebfont', 'duration'];
+const SHARED_HELPERS = ['contextFill', 'composerHint', 'onClaudeAi', 'resumeCommand', 'loadWebfont', 'duration', 'freshness'];
 
 for (const client of CLIENTS) {
   test(`${client.name}: the metric that measures success can display success`, async () => {
@@ -462,6 +462,43 @@ for (const client of CLIENTS) {
     for (const site of ['(value)', '(w.waitingMs)']) {
       assert.ok(!src.includes(`ago${site}`), `ago${site} renders a duration as an age`);
       assert.ok(src.includes(`duration${site}`), `duration${site} must render the metric`);
+    }
+  });
+}
+
+for (const client of CLIENTS) {
+  test(`${client.name}: nothing on screen says "now ago"`, async () => {
+    // Seen in a browser: the phone header read "3 active · now ago". `ago`
+    // returns "now" for anything under a minute, and three call sites appended
+    // " ago" to it — which is exactly why `freshness` exists in the CLI, and
+    // exactly the helper neither client had.
+    const src = await read(client.js);
+    assert.match(src, /function freshness/, 'the CLI has had this helper the whole time');
+    // Walk the call, rather than matching it: `ago(Date.now() - x)` has a
+    // closing paren in the middle, which is enough to defeat `[^)]*`.
+    for (const call of src.matchAll(/\bago\(/g)) {
+      let depth = 1;
+      let i = call.index + call[0].length;
+      for (; i < src.length && depth > 0; i += 1) {
+        if (src[i] === '(') depth += 1;
+        else if (src[i] === ')') depth -= 1;
+      }
+      const after = src.slice(i, i + 6);
+      assert.doesNotMatch(after, /^\}? ago/, `an age that reads "now" cannot take an " ago" suffix: ${src.slice(call.index, i + 6)}`);
+    }
+  });
+}
+
+for (const client of CLIENTS) {
+  test(`${client.name}: a rate-limit window that already reset is not counted down`, async () => {
+    // `resetsAt` in the past rendered "5h resets now", and then "5h resets —".
+    // Both are noise: the window has rolled and there is nothing to wait for.
+    const src = await read(client.js);
+    const sites = [...src.matchAll(/rl\?\.resetsAt/g)];
+    assert.ok(sites.length, 'the rate-limit reading is rendered somewhere');
+    for (const site of sites) {
+      const after = src.slice(site.index, site.index + 30);
+      assert.match(after, /resetsAt > Date\.now\(\)/, 'guard on it being in the future, not on it existing');
     }
   });
 }

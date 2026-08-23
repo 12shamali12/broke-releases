@@ -434,6 +434,13 @@ function duration(ms) {
   return `${Math.round(hr / 24)}d`;
 }
 
+/** "updated now ago" reads like a bug because it is one. */
+function freshness(ageMs) {
+  if (ageMs == null) return 'never';
+  const relative = ago(ageMs);
+  return relative === 'now' ? 'just now' : `${relative} ago`;
+}
+
 /** Debounced so a fast typist does not hit localStorage on every keystroke. */
 function saveDraft(sessionId, value) {
   if (value) state.drafts[sessionId] = value;
@@ -768,13 +775,13 @@ function viewBoard() {
       h('button', { class: 'icon', style: 'min-height:38px;height:38px', 'aria-label': 'Start a session', onclick: () => go('spawn') },
         icon('<path d="M12 5v14M5 12h14"/>'))),
     h('div', { class: 'sub' },
-      h('span', {}, `${fleet.counts.active} active · ${age == null ? 'age unknown' : `${ago(age)} ago`}`),
+      h('span', {}, `${fleet.counts.active} active · ${age == null ? 'age unknown' : freshness(age)}`),
       h('span', { class: 'grow' }),
-      rl?.resetsAt ? h('span', {}, `5h resets ${duration(rl.resetsAt - Date.now())}`) : null));
+      rl?.resetsAt > Date.now() ? h('span', {}, `5h resets ${duration(rl.resetsAt - Date.now())}`) : null));
 
   const banner = stale
     ? h('div', { class: 'banner' },
-        h('h3', {}, age == null ? 'Showing the last board this phone saw' : `Showing the board from ${ago(age)} ago`),
+        h('h3', {}, age == null ? 'Showing the last board this phone saw' : `Showing the board from ${freshness(age)}`),
         h('p', {}, 'Your laptop cannot be reached, so sessions may have moved on since.'))
     : null;
 
@@ -807,7 +814,7 @@ function viewBoard() {
         h('div', { class: 'rule' }, h('span', { class: 't' }, 'Queued · sends when it reconnects'), h('span', { class: 'line' })),
         state.outbox.map((e) => h('div', { class: 'card queued' },
           h('div', { class: 'card-title' }, e.label ?? e.verb),
-          h('div', { class: 'card-sub', style: 'margin-top:5px' }, `${e.verb} · queued ${ago(Date.now() - e.queuedAt)} ago`))))
+          h('div', { class: 'card-sub', style: 'margin-top:5px' }, `${e.verb} · queued ${freshness(Date.now() - e.queuedAt)}`))))
     : null;
 
   const body = shown.length

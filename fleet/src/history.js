@@ -156,6 +156,32 @@ export class HistoryStore {
     // fill its own history with it.
     if (last && last.type === type && last.detail === detail && at - last.at < 60_000) return null;
 
+    // The same observation, recorded twice.
+    //
+    // Found by reading a real panel: "Blocked: paste the staging endpoint URL"
+    // appeared twice at an identical timestamp, and "Still waiting after 2
+    // days" twice minutes apart. Both were one daemon restart. A cold start
+    // re-derives every session's current state from scratch and backdates it
+    // to when that state began, which is right — but it means every restart
+    // re-reports facts already in the history, and the check above only ever
+    // compared against the newest entry, so an event landing behind another
+    // slipped past it. Left alone, a week of restarts fills MAX_PER_SESSION
+    // with the same four lines and evicts the history worth keeping.
+    //
+    // A backdated event carries a stable `at` precisely so this is decidable:
+    // the same type, the same detail and the same instant is one fact.
+    if (entries.some((e) => e.type === type && e.detail === detail && e.at === at)) return null;
+
+    // And a state that has not changed is not news, however long ago it was
+    // last said. Restricted to observations of the session: repeating one of
+    // YOUR actions is a thing you did twice, and the history has to say so.
+    if (type.startsWith('session.')) {
+      const lastOfType = entries.findLastIndex((e) => e.type === type);
+      if (lastOfType !== -1 && entries[lastOfType].detail === detail && lastOfType === entries.length - 1) {
+        return null;
+      }
+    }
+
     const entry = { at, type, detail };
     entries.push(entry);
     // Bounded per session: a chatty session must not evict the history of a

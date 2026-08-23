@@ -50,9 +50,69 @@ test('a repeated state on consecutive polls is not recorded twice', async () => 
   h.record('s1', 'session.blocked', 'same question');
   assert.equal(h.for('s1').length, 1);
 
-  // But the same thing happening again much later IS news.
+  // Nor much later, if nothing happened in between. This used to be recorded
+  // as news, and it was how a daemon restart put a second identical line into
+  // a real session's panel: a cold start re-derives every session's current
+  // state, so the same question comes back around hours later with nothing
+  // between the two. The session never stopped being blocked.
   now += 2 * HOUR;
   h.record('s1', 'session.blocked', 'same question');
+  assert.equal(h.for('s1').length, 1);
+});
+
+test('blocked, answered, and blocked again on the same question is two lines', () => {
+  // The case the rule above must not swallow. What separates a real second
+  // episode from a restart re-reporting the first is that the session
+  // actually unblocked in between — and that is recorded.
+  let now = 0;
+  const h = new HistoryStore({ now: () => now });
+
+  h.record('s1', 'session.blocked', 'which endpoint?');
+  now += 20 * 60_000;
+  h.record('s1', 'session.unblocked');
+  now += 20 * 60_000;
+  h.record('s1', 'session.blocked', 'which endpoint?');
+
+  assert.deepEqual(h.for('s1').map((e) => e.type), ['session.blocked', 'session.unblocked', 'session.blocked']);
+});
+
+test('a restart re-reporting a backdated fact does not duplicate it', () => {
+  // A cold start backdates `session.blocked` to when the session began
+  // waiting, which is what makes the entry honest — and what makes the
+  // duplicate detectable. Seen in a real panel: the same line twice at an
+  // identical timestamp, once per daemon run.
+  let now = 10 * HOUR;
+  const h = new HistoryStore({ now: () => now });
+  const startedWaiting = 2 * HOUR;
+
+  h.record('s1', 'session.blocked', 'paste the staging endpoint URL', startedWaiting);
+  h.record('s1', 'session.stalled', '2 days');
+  now += 5 * 60_000;
+  // Second daemon run: same two observations, the stall timed at the restart.
+  h.record('s1', 'session.blocked', 'paste the staging endpoint URL', startedWaiting);
+  h.record('s1', 'session.stalled', '2 days');
+
+  assert.deepEqual(h.for('s1').map((e) => e.type), ['session.stalled', 'session.blocked']);
+});
+
+test('a stall that has grown is still news', () => {
+  let now = 0;
+  const h = new HistoryStore({ now: () => now });
+  h.record('s1', 'session.stalled', '2 days');
+  now += 24 * HOUR;
+  h.record('s1', 'session.stalled', '3 days');
+  assert.equal(h.for('s1').length, 2);
+});
+
+test('doing the same thing twice is two things you did', () => {
+  // The rule is about observations of the session, not about you. Muting
+  // alerts twice is two decisions, and a history that shows one is wrong
+  // about what happened.
+  let now = 0;
+  const h = new HistoryStore({ now: () => now });
+  h.record('s1', 'you.snoozed', '2h');
+  now += 3 * HOUR;
+  h.record('s1', 'you.snoozed', '2h');
   assert.equal(h.for('s1').length, 2);
 });
 
