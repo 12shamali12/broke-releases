@@ -67,3 +67,42 @@ test('no store writes to a pid-based temp name', async () => {
     assert.doesNotMatch(src, /\$\{process\.pid\}\.tmp/, `${file} uses a pid-based temp name`);
   }
 });
+
+test('every status bucket used anywhere is one the model actually maps', async () => {
+  // A bucket string the normaliser does not know does not fail — it silently
+  // falls through to `completed`. So an invented constant produces a board
+  // that looks plausible and is wrong, with nothing to notice. Two tests and
+  // one adapter had exactly that.
+  const { readFile: read, readdir: list } = await import('node:fs/promises');
+  const model = await read(join(ROOT, 'src/model.js'), 'utf8');
+  const known = new Set([...model.matchAll(/SESSION_STATUS_BUCKET_[A-Z_]+/g)].map((m) => m[0]));
+  assert.ok(known.size >= 4, 'found the map in model.js');
+
+  for (const dir of ['src', 'test', 'bin', 'fixtures']) {
+    for (const file of await list(join(ROOT, dir), { recursive: true })) {
+      const name = String(file);
+      if (!/\.(js|mjs|json)$/.test(name)) continue;
+      const src = await read(join(ROOT, dir, name), 'utf8');
+      for (const [used] of src.matchAll(/SESSION_STATUS_BUCKET_[A-Z_]+/g)) {
+        assert.ok(known.has(used), `${dir}/${name} uses ${used}, which model.js does not map`);
+      }
+    }
+  }
+});
+
+test('every session status used anywhere is one the model actually maps', async () => {
+  const { readFile: read, readdir: list } = await import('node:fs/promises');
+  const model = await read(join(ROOT, 'src/model.js'), 'utf8');
+  const known = new Set([...model.matchAll(/SESSION_STATUS_(?!BUCKET)[A-Z_]+/g)].map((m) => m[0]));
+
+  for (const dir of ['src', 'test', 'bin', 'fixtures']) {
+    for (const file of await list(join(ROOT, dir), { recursive: true })) {
+      const name = String(file);
+      if (!/\.(js|mjs|json)$/.test(name)) continue;
+      const src = await read(join(ROOT, dir, name), 'utf8');
+      for (const [used] of src.matchAll(/SESSION_STATUS_(?!BUCKET)[A-Z_]+/g)) {
+        assert.ok(known.has(used), `${dir}/${name} uses ${used}, which model.js does not map`);
+      }
+    }
+  }
+});

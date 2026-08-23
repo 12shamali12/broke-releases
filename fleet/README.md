@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 358 tests, no network, no CLI, no credentials
+npm test                        # 372 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs doctor       # can this machine run Fleet? no daemon needed
@@ -173,7 +173,7 @@ tokens and no network call:
   timestamps, model, git branch, `stop_reason`, and real token usage.
 
 Together those give title, status, lane, model, branch, repository, idle time
-and context usage — the whole board except `needs_action`.
+and context usage — the whole board.
 
 It also reads **sessions whose process has exited**. `claude agents --json`
 lists only what is running, and a session you closed the terminal on is
@@ -189,10 +189,23 @@ Three decisions in that adapter are worth stating:
   session here is 7 MB — and this runs every poll. The first line of a tail read
   is a fragment, so it is dropped rather than parsed: half a JSON object is not
   a record.
-- **A finished turn is `ready`, never `blocked`.** Locally there is no signal
-  separating "it asked you a question" from "it finished". Treating every
-  finished turn as blocked would fire a notification for each one and make the
-  alert that matters worthless.
+- **"Blocked" is inferred, and deliberately hard to trigger.** The platform's
+  own `needs_action` is not available locally, so it is inferred from the
+  transcript — and inference here is dangerous in one specific way: Fleet's
+  entire value rests on `blocked` meaning something, and an alert that fires
+  for every finished turn gets muted within a day, taking the real one with it.
+  So four conditions are all required, and the answer is "no" whenever there is
+  doubt: the turn is over (`end_turn`, not a tool call mid-flight), the
+  assistant spoke last, the last line ends in a question, **and** you have had
+  five minutes to answer it. That grace period is the difference between "it
+  asked" and "it asked and you have not answered".
+
+  Only the trailing line counts — a question inside an explanation is usually
+  rhetorical or answered below it. Questions inside code fences are ignored.
+  What this does *not* attempt is detecting a permission prompt, which would be
+  the strongest possible signal: no permission-prompt entry appears in any
+  transcript I could examine, and inventing a shape for one would produce a
+  detector that silently never fires.
 - **The repository is the git remote**, read from `.git/config` rather than by
   shelling out, so `repo:owner/name` means the same thing on every machine. A
   local path would group nothing.

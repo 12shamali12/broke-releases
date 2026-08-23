@@ -13,7 +13,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { LocalAdapter, projectSlug, readTranscript, remoteUrl, tailLines, toRawRecord } from '../src/adapters/local.js';
+import { LocalAdapter, needsActionFrom, projectSlug, readTranscript, remoteUrl, tailLines, toRawRecord, trailingQuestion } from '../src/adapters/local.js';
 import { normalizeFleet } from '../src/model.js';
 
 const entry = (over = {}) => JSON.stringify({
@@ -426,4 +426,108 @@ test('old transcripts are not read at all', async () => {
 test('no projects directory is an empty fleet, not a crash', async () => {
   const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: '/nonexistent-fleet-test' });
   assert.deepEqual(await adapter.list(), []);
+});
+
+// ---------------------------------------------------------------- needs you
+
+const MIN = 60_000;
+const ended = (text) => readTranscript([entry({
+  message: { model: 'claude-opus-5', stop_reason: 'end_turn', content: [{ type: 'text', text }] },
+})]);
+
+test('a turn that ends on a question, left unanswered, needs you', () => {
+  // The whole trailing line, not just the final sentence: on a lock screen
+  // "I can use either endpoint. Which one should I point at?" is far more use
+  // than the question alone, and it is what the session actually said last.
+  assert.equal(
+    needsActionFrom(ended('I can use either endpoint. Which one should I point at?'), { idleFor: 10 * MIN }),
+    'I can use either endpoint. Which one should I point at?',
+  );
+});
+
+test('but not until you have had a chance to answer it', () => {
+  // Without the grace period every question raises an alert the instant it is
+  // asked — while you are still reading it.
+  assert.equal(needsActionFrom(ended('Which one?'), { idleFor: 5_000 }), null);
+  assert.equal(needsActionFrom(ended('Which one?'), { idleFor: 10 * MIN }), 'Which one?');
+});
+
+test('a turn that is still running never needs you', () => {
+  const midTurn = readTranscript([entry({
+    message: { model: 'claude-opus-5', stop_reason: 'tool_use', content: [{ type: 'text', text: 'Shall I?' }] },
+  })]);
+  assert.equal(needsActionFrom(midTurn, { idleFor: 60 * MIN }), null);
+});
+
+test('a turn where you spoke last is your turn, not its', () => {
+  const yours = readTranscript([entry({ type: 'user', message: { content: 'do it?' } })]);
+  assert.equal(needsActionFrom(yours, { idleFor: 60 * MIN }), null);
+});
+
+test('a statement is not a question, however long it sits', () => {
+  // This is the one that matters. `blocked` firing for every finished turn is
+  // how the alert that mattered gets muted.
+  for (const text of [
+    'Done. All 42 tests pass.',
+    'I have pushed the change.',
+    'Should I have done that differently? I decided yes, and did.',
+    'Here is the summary:\n- one\n- two',
+  ]) {
+    assert.equal(needsActionFrom(ended(text), { idleFor: 60 * MIN }), null, `"${text.slice(0, 40)}" is not a question`);
+  }
+});
+
+test('a question inside code is not a question', () => {
+  const text = 'Fixed it:\n```js\nconst ok = confirm("Really?");\n```';
+  assert.equal(needsActionFrom(ended(text), { idleFor: 60 * MIN }), null);
+});
+
+test('markdown around the question does not hide it', () => {
+  assert.equal(trailingQuestion('**Which environment should I use?**'), 'Which environment should I use?');
+  assert.equal(trailingQuestion('- Should I keep going?'), 'Should I keep going?');
+  assert.equal(trailingQuestion('Some notes.\n\nWhich one?\n\n'), 'Which one?');
+});
+
+test('only the trailing line counts', () => {
+  // A question in the middle of an explanation is usually rhetorical or
+  // answered further down; what is genuinely waiting is what was said last.
+  assert.equal(trailingQuestion('Why did that fail? Because the port was busy. Fixed.'), null);
+  assert.equal(trailingQuestion('Why did that fail?\nBecause the port was busy.'), null);
+});
+
+test('an empty or missing message is not a question', () => {
+  assert.equal(trailingQuestion(''), null);
+  assert.equal(trailingQuestion(null), null);
+  assert.equal(needsActionFrom(null, { idleFor: 60 * MIN }), null);
+});
+
+test('a very long question is trimmed for a lock screen', () => {
+  const long = `${'Should I '.repeat(60)}?`;
+  const out = needsActionFrom(ended(long), { idleFor: 60 * MIN });
+  assert.ok(out.length <= 180);
+});
+
+test('needing you makes the session blocked and actionable, end to end', () => {
+  // `actionable` is what drives every notification, so the wiring from a
+  // question in a transcript through to an alert is worth asserting whole.
+  const raw = toRawRecord(
+    { sessionId: 'a', name: 'importer' },
+    ended('I need the staging endpoint. What should I use?'),
+    { now: Date.parse('2026-08-22T10:30:00.000Z') },
+  );
+  const s = normalizeFleet([raw]).sessions[0];
+  assert.equal(s.lane, 'blocked');
+  assert.equal(s.actionable, true);
+  assert.equal(s.summary.needsAction, 'I need the staging endpoint. What should I use?');
+});
+
+test('a finished turn with no question stays ready, never blocked', () => {
+  const raw = toRawRecord(
+    { sessionId: 'a', name: 'importer' },
+    ended('All done, tests pass.'),
+    { now: Date.parse('2026-08-22T10:30:00.000Z') },
+  );
+  const s = normalizeFleet([raw]).sessions[0];
+  assert.equal(s.lane, 'ready');
+  assert.equal(s.actionable, false, 'and so it can never raise a push');
 });

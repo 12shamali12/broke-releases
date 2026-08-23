@@ -746,7 +746,7 @@ test('the bulk limit is stated rather than silently truncating', async () => {
     id: `session_bulk_${i}`,
     title: `S${i}`,
     session_status: 'SESSION_STATUS_IDLE',
-    status_bucket: 'SESSION_STATUS_BUCKET_NEEDS_INPUT',
+    status_bucket: 'SESSION_STATUS_BUCKET_BLOCKED',
     environment_kind: 'anthropic_cloud',
     connection_status: 'connected',
     updated_at: new Date().toISOString(),

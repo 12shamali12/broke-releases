@@ -169,13 +169,96 @@ function textOf(entry) {
 }
 
 /**
+ * How long a finished turn waits before it counts as needing you.
+ *
+ * Without this, every turn that ends in a question raises an alert the instant
+ * it is asked — while you are still reading it. The grace period is what makes
+ * the difference between "it asked" and "it asked and you have not answered".
+ */
+const NEEDS_YOU_AFTER_MS = 5 * 60 * 1000;
+
+/** Long enough to be the whole question, short enough for a lock screen. */
+const MAX_NEEDS_ACTION = 180;
+
+/**
+ * Did this session actually ask you something?
+ *
+ * The platform's own `needs_action` is not available locally, so it has to be
+ * inferred — and inference here is dangerous in a specific way. Fleet's entire
+ * value rests on `blocked` meaning something: an alert that fires for every
+ * finished turn gets muted within a day, and takes the one that mattered with
+ * it. So this is deliberately built for precision over recall, and answers
+ * "no" whenever it is unsure.
+ *
+ * Four conditions, all required:
+ *   - the turn is over (`end_turn`, not a tool call mid-flight)
+ *   - the assistant spoke last, so it is not your turn already in progress
+ *   - the last thing it said ends in a question
+ *   - and you have had a few minutes to answer it
+ *
+ * What this deliberately does NOT try to detect is a permission prompt. That
+ * would be the strongest possible signal, but no permission-prompt entry
+ * appears in the transcripts I could examine, and inventing a shape for one
+ * would produce a detector that silently never fires.
+ */
+export function needsActionFrom(transcript, { idleFor = 0, graceMs = NEEDS_YOU_AFTER_MS } = {}) {
+  if (!transcript) return null;
+  if (transcript.lastSpeaker !== 'assistant') return null;
+  if (transcript.stopReason !== 'end_turn') return null;
+  if (idleFor < graceMs) return null;
+
+  const question = trailingQuestion(transcript.text);
+  return question ? question.slice(0, MAX_NEEDS_ACTION) : null;
+}
+
+/**
+ * The question a message ends on, if it ends on one.
+ *
+ * Only the trailing line counts. A question in the middle of an explanation is
+ * usually rhetorical or already answered further down; the thing that is
+ * genuinely waiting for you is the thing said last.
+ */
+export function trailingQuestion(text) {
+  if (!text) return null;
+
+  const lines = String(text).split('\n');
+  let inFence = false;
+  let last = null;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (/^```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    // Code is not conversation, and a `?` inside it means nothing.
+    if (inFence || !line) continue;
+    last = line;
+  }
+  if (!last) return null;
+
+  // Strip markdown from BOTH ends before looking at the final character.
+  // Stripping only the trailing side leaves `**Which one?` — still detected as
+  // a question, but rendered with stray asterisks on a lock screen.
+  const cleaned = last
+    .replace(/^[-*+]\s+/, '')      // list marker
+    .replace(/^#{1,6}\s+/, '')     // heading
+    .replace(/^[*_`]+/, '')        // opening emphasis
+    .replace(/[*_`]+$/, '')        // closing emphasis
+    .trim();
+  // The whole trailing line, not just the final sentence: "I can use either
+  // endpoint. Which one should I point at?" is far more use on a lock screen
+  // than the question alone, and it is what the session actually said last.
+  return cleaned.endsWith('?') ? cleaned : null;
+}
+
+/**
  * Turn what the laptop knows into the raw shape the API would have returned.
  *
  * Where a fact genuinely is not knowable locally it is left null rather than
  * invented — `normalizeSession` already handles absent fields, and a plausible
  * guess would be worse than a gap because nothing downstream could tell.
  */
-export function toRawRecord(agent, transcript, { remote = null, live = true } = {}) {
+export function toRawRecord(agent, transcript, { remote = null, live = true, now = Date.now() } = {}) {
   // Only a live process can be mid-turn. A transcript ending on a tool call
   // whose process has since exited was interrupted, not working.
   const running = live && (transcript?.stopReason === 'tool_use' || transcript?.lastSpeaker === 'user');
@@ -185,13 +268,17 @@ export function toRawRecord(agent, transcript, { remote = null, live = true } = 
   // finished its turn. Without the platform's own summary there is no
   // `needs_action`, so the lane is review-ready rather than blocked — claiming
   // blocked would make notifications fire for every finished turn.
+  const at = transcript?.at ?? agent.startedAt ?? null;
+  const idleFor = at ? Math.max(0, now - at) : 0;
+  const needsAction = needsActionFrom(transcript, { idleFor });
+
   const bucket = running
     ? 'SESSION_STATUS_BUCKET_WORKING'
-    : waiting
-      ? 'SESSION_STATUS_BUCKET_REVIEW_READY'
-      : 'SESSION_STATUS_BUCKET_COMPLETED';
-
-  const at = transcript?.at ?? agent.startedAt ?? null;
+    : needsAction
+      ? 'SESSION_STATUS_BUCKET_BLOCKED'
+      : waiting
+        ? 'SESSION_STATUS_BUCKET_REVIEW_READY'
+        : 'SESSION_STATUS_BUCKET_COMPLETED';
 
   return {
     id: agent.sessionId,
@@ -211,12 +298,12 @@ export function toRawRecord(agent, transcript, { remote = null, live = true } = 
     origin: agent.kind === 'background' ? 'background' : 'claude_code_cli',
     tags: agent.kind ? [`kind:${agent.kind}`] : [],
     post_turn_summary: {
-      status_category: waiting ? 'review_ready' : running ? 'working' : 'done',
+      status_category: needsAction ? 'need_input' : running ? 'working' : waiting ? 'review_ready' : 'done',
       status_detail: firstLine(transcript?.text) ?? null,
-      // Deliberately empty. Locally there is no signal that distinguishes "it
-      // asked you a question" from "it finished", and treating every finished
-      // turn as blocked would make the alert that matters worthless.
-      needs_action: '',
+      // Inferred, conservatively — see `needsActionFrom`. Empty whenever there
+      // is any doubt, because a `blocked` that fires for every finished turn
+      // gets muted within a day and takes the real alert with it.
+      needs_action: needsAction ?? '',
     },
     session_context: {
       model: transcript?.model ?? null,
@@ -403,6 +490,7 @@ export class LocalAdapter {
         toRawRecord({ ...agent, cwd }, transcript, {
           remote: await this.#remoteFor(cwd),
           live: running.has(agent.sessionId),
+          now,
         }),
       );
     }
