@@ -307,3 +307,16 @@ test('the palette never offers what the panel beside it says is impossible', asy
   }
   assert.match(body, /disabled: !writable/, 'and it must look unavailable, not merely do nothing');
 });
+
+for (const client of CLIENTS) {
+  test(`${client.name}: the context meter does not claim a number it does not have`, async () => {
+    const js = await read(client.js);
+    const css = await read(client.css);
+    // No client may fill in a zero for a missing reading.
+    assert.doesNotMatch(js, /contextUsed \?\? 0/, 'a missing reading is not a reading of zero');
+    assert.match(js, /function contextFill/, 'both clients share the same honest helper');
+    assert.match(js, /known: false/);
+    // And "unknown" has to look different, or the honesty is invisible.
+    assert.match(css, /\.meter\.unknown/);
+  });
+}

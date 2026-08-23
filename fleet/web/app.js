@@ -416,6 +416,26 @@ function deviceLabel() {
   return browser ? `${kind} · ${browser}` : kind;
 }
 
+/**
+ * The context meter, when the number behind it may not exist.
+ *
+ * No adapter can read tokens-used yet, so `contextUsed` is null for every
+ * session. Drawing that as 0% said "plenty of room left" — a claim Fleet
+ * cannot make, and the opposite of the one that matters. Every client did
+ * exactly that, for every session, from the day the meter was added.
+ *
+ * `known: false` renders an empty striped track and the word "unknown", which
+ * is true and is also the thing that will prompt someone to fix the adapter.
+ */
+function contextFill(s) {
+  const used = s.contextUsed;
+  if (!s.contextMax || !Number.isFinite(used)) {
+    return { known: false, pct: 0, label: '—', hot: false };
+  }
+  const pct = Math.min(100, Math.round((used / s.contextMax) * 100));
+  return { known: true, pct, label: `${pct}%`, hot: pct >= 70 };
+}
+
 function viewPair() {
   const code = h('input', { id: 'code', inputmode: 'numeric', maxlength: '6', placeholder: '000000',
     autocomplete: 'one-time-code', 'aria-label': 'Six-digit pairing code', autofocus: true,
@@ -467,7 +487,7 @@ function viewPair() {
 
 function sessionCard(s) {
   const need = s.summary?.needsAction;
-  const pct = s.contextMax ? Math.min(100, Math.round(((s.contextUsed ?? 0) / s.contextMax) * 100)) : 0;
+  const ctx = contextFill(s);
 
   // One sentence that carries everything the card shows visually, so the card
   // reads as a card rather than as eleven loose fragments.
@@ -520,7 +540,7 @@ function sessionCard(s) {
       h('span', {}, s.modelId?.replace('claude-', '') ?? '—'),
       h('span', {}, '·'),
       h('span', {}, s.effort ?? '—'),
-      h('div', { class: `meter${pct >= 70 ? ' hot' : ''}` }, h('i', { style: `width:${pct}%` })),
+      h('div', { class: `meter${ctx.hot ? ' hot' : ''}${ctx.known ? '' : ' unknown'}` }, h('i', { style: `width:${ctx.pct}%` })),
       // "watch only" and "disconnected" call for different responses, so the
       // card says which one it is rather than shrugging the same word at both.
       h('span', {}, s.reachable ? '' : (s.reachLabel ?? 'unreachable'))));
@@ -632,7 +652,7 @@ function viewSession() {
       onclick: () => dispatch(s.id, verb, payload, s.title),
     }, label);
 
-  const pct = s.contextMax ? Math.min(100, Math.round(((s.contextUsed ?? 0) / s.contextMax) * 100)) : 0;
+  const ctx = contextFill(s);
 
   return [
     h('div', { class: 'head' },
@@ -668,10 +688,10 @@ function viewSession() {
       h('div', { class: 'card' },
         h('div', { style: 'display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px;color:var(--dm)' },
           h('span', {}, 'Context'),
-          h('span', { style: 'font-family:var(--mono)' }, `${pct}%`)),
+          h('span', { style: 'font-family:var(--mono)' }, ctx.known ? ctx.label : 'not readable yet')),
         // The percentage is already stated above, so the bar itself is
         // decorative here — announcing it twice is noise, not access.
-        h('div', { class: `meter${pct >= 70 ? ' hot' : ''}`, 'aria-hidden': 'true' }, h('i', { style: `width:${pct}%` }))),
+        h('div', { class: `meter${ctx.hot ? ' hot' : ''}${ctx.known ? '' : ' unknown'}`, 'aria-hidden': 'true' }, h('i', { style: `width:${ctx.pct}%` }))),
 
       h('div', { class: 'row', style: 'margin:0 0 14px' },
         h('div', { class: 'listrow', style: 'flex-grow:1;margin:0' },

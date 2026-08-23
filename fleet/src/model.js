@@ -199,6 +199,14 @@ export function normalizeSession(raw, now = Date.now()) {
     model,
     modelId: bareModelId(model),
     contextMax: contextWindowFor(model),
+    // Null, never 0, and the distinction is the whole point.
+    //
+    // No adapter can read this yet. A meter drawn at 0% says "plenty of room
+    // left", which is a claim Fleet cannot make and which happens to be the
+    // opposite of the claim that matters — every client rendered exactly that,
+    // for every session, since the meter was added. Null makes the clients
+    // say "unknown", which is true.
+    contextUsed: Number.isFinite(ctx.context_used_tokens) ? ctx.context_used_tokens : null,
     effort: ctx.effort_level ?? null,
     permissionMode: ctx.permission_mode ?? raw.external_metadata?.permission_mode ?? null,
 

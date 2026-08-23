@@ -137,3 +137,26 @@ test('the label and the explanation never disagree about being reachable', () =>
     assert.equal(unreachableBecause(args) === null, reachable, JSON.stringify(args));
   }
 });
+
+// ---------------------------------------------------------------- context
+
+test('context used is null when nothing reported it, never zero', () => {
+  // A meter drawn at 0% says "plenty of room left". No adapter can read this
+  // yet, so every client said exactly that, about every session, for as long
+  // as the meter has existed. Null is what makes them say "unknown" instead.
+  const s = normalizeSession({ id: 'x', session_context: { model: 'claude-opus-5' } });
+  assert.equal(s.contextUsed, null);
+  assert.notEqual(s.contextUsed, 0, 'zero is a measurement; this is the absence of one');
+});
+
+test('a real reading is passed through', () => {
+  const s = normalizeSession({ id: 'x', session_context: { model: 'claude-opus-5', context_used_tokens: 120_000 } });
+  assert.equal(s.contextUsed, 120_000);
+});
+
+test('a nonsense reading is treated as no reading', () => {
+  for (const bad of ['lots', null, undefined, NaN, Infinity]) {
+    const s = normalizeSession({ id: 'x', session_context: { model: 'claude-opus-5', context_used_tokens: bad } });
+    assert.equal(s.contextUsed, null, `${String(bad)} must not become a percentage`);
+  }
+});

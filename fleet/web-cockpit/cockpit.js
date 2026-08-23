@@ -180,6 +180,26 @@ const svg = (d, cls) => h('span', { class: cls, 'aria-hidden': 'true', html: `<s
  * onclick>` breaks that promise silently: it looks pressable, it is not
  * focusable, and no keyboard or screen reader can reach it.
  */
+/**
+ * The context meter, when the number behind it may not exist.
+ *
+ * No adapter can read tokens-used yet, so `contextUsed` is null for every
+ * session. Drawing that as 0% said "plenty of room left" — a claim Fleet
+ * cannot make, and the opposite of the one that matters. Every client did
+ * exactly that, for every session, from the day the meter was added.
+ *
+ * `known: false` renders an empty striped track and the word "unknown", which
+ * is true and is also the thing that will prompt someone to fix the adapter.
+ */
+function contextFill(s) {
+  const used = s.contextUsed;
+  if (!s.contextMax || !Number.isFinite(used)) {
+    return { known: false, pct: 0, label: '—', hot: false };
+  }
+  const pct = Math.min(100, Math.round((used / s.contextMax) * 100));
+  return { known: true, pct, label: `${pct}%`, hot: pct >= 70 };
+}
+
 function pressable(attrs, onActivate) {
   return {
     ...attrs,
@@ -796,7 +816,7 @@ function transport() {
 }
 
 function railRow(s, index) {
-  const pct = s.contextMax ? Math.min(100, Math.round(((s.contextUsed ?? 0) / s.contextMax) * 100)) : 0;
+  const ctx = contextFill(s);
   // The rail is one list where exactly one thing is chosen, so it is a
   // listbox. `tabindex` is roving: only the selected row is in the tab order,
   // and ⌘↑/⌘↓ and j/k move between them — tabbing through forty sessions to
@@ -816,7 +836,7 @@ function railRow(s, index) {
       h('div', { class: 'title' }, s.title),
       s.note ? h('div', { class: 'rownote' }, s.note.split('\n')[0].slice(0, 60)) : null,
       h('div', { class: 'sub' },
-        h('div', { class: `meter${pct >= 70 ? ' hot' : ''}` }, h('i', { style: `width:${pct}%` })),
+        h('div', { class: `meter${ctx.hot ? ' hot' : ''}${ctx.known ? '' : ' unknown'}` }, h('i', { style: `width:${ctx.pct}%` })),
         h('span', { class: 'ctx' }, s.contextMax >= 1e6 ? '1M' : '200K'))),
     h('div', { class: 'right' },
       h('span', { class: `age${(s.staleFor ?? 0) > 864e5 ? ' hot' : ''}`, title: s.snoozedUntil ? `muted for ${ago(s.snoozedUntil - Date.now())}` : null },
@@ -969,7 +989,7 @@ function composer(s) {
 }
 
 function panel(s) {
-  const pct = s.contextMax ? Math.min(100, Math.round(((s.contextUsed ?? 0) / s.contextMax) * 100)) : 0;
+  const ctx = contextFill(s);
   const tone = s.lane === 'blocked' ? 'ac' : s.lane === 'ready' ? 'ok' : 'wk';
   const rl = state.fleet?.rateLimit;
 
@@ -1028,8 +1048,8 @@ function panel(s) {
       h('div', { class: 'h' }, 'Budget'),
       h('div', { class: 'budget-row' }, h('span', { class: 'a' }, 'Context'),
         h('span', { class: 'b' }, s.contextMax >= 1e6 ? '1M window' : '200K window')),
-      h('div', { class: `meter${pct >= 70 ? ' hot' : ''}` }, h('i', { style: `width:${pct}%` })),
-      h('div', { class: 'note' }, 'fleetd cannot read tokens used yet — see the README'),
+      h('div', { class: `meter${ctx.hot ? ' hot' : ''}${ctx.known ? '' : ' unknown'}` }, h('i', { style: `width:${ctx.pct}%` })),
+      h('div', { class: 'note' }, ctx.known ? `${ctx.label} of the window used` : 'fleetd cannot read tokens used yet — see the README'),
       h('div', { style: 'height:13px' }),
       h('div', { class: 'budget-row' }, h('span', { class: 'a' }, '5-hour window'),
         h('span', { class: 'b' }, rl?.status ?? '—')),

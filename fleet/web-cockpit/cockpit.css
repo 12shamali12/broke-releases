@@ -525,3 +525,12 @@ kbd.hot { color: var(--ac); background: var(--acf); border-color: var(--acb); }
   width: 1.15em; height: 1.15em; flex: 0 0 auto;
 }
 .ico svg { display: block; }
+
+/* A meter with no number behind it. Striped and empty rather than drawn at 0%,
+   because a 0% bar says "plenty of room left" — which Fleet cannot know, and
+   which is the opposite of the thing worth knowing. */
+.meter.unknown {
+  background: repeating-linear-gradient(
+    -45deg, var(--bd), var(--bd) 3px, transparent 3px, transparent 6px);
+}
+.meter.unknown > i { display: none; }
