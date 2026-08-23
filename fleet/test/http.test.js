@@ -1057,3 +1057,50 @@ test('undo needs something to undo', async () => {
     await h.cleanup();
   }
 });
+
+
+// ------------------------------------------------- across a restart
+
+/**
+ * Event ids restart at 1 every time fleetd starts, and clients keep their
+ * cursor across one. Measured against a real restart: a phone whose cursor was
+ * 6 asked a freshly started daemon holding ids 1 to 6 for everything after 6,
+ * and was told nothing had happened — about six sessions waiting on it.
+ */
+test('a cursor from a previous run is answered with everything, not nothing', () => {
+  const log = new EventLog();
+  for (let i = 0; i < 6; i += 1) log.append({ type: 'session.blocked', sessionId: `s${i}` });
+
+  // Within this run, asking past the end really does mean nothing new.
+  assert.equal(log.since(6).events.length, 0);
+  assert.equal(log.since(6).reset, false);
+
+  // Beyond it is impossible within one run, so it is a client from another.
+  const replay = log.since(99);
+  assert.equal(replay.events.length, 6, 'the whole log, not silence');
+  assert.equal(replay.reset, true);
+});
+
+test('the log says which run its ids belong to', () => {
+  const a = new EventLog();
+  const b = new EventLog();
+  assert.ok(a.epoch);
+  assert.notEqual(a.epoch, b.epoch, 'two runs must be distinguishable');
+  assert.equal(a.since(0).epoch, a.epoch);
+});
+
+test('a reset is not reported as a gap, because the repair differs', () => {
+  // A gap means "you missed some of this run". A reset means "your cursor is
+  // from a different run" — the client has to drop what it holds rather than
+  // assume an unbroken history.
+  const log = new EventLog({ capacity: 2 });
+  for (let i = 0; i < 5; i += 1) log.append({ type: 'session.blocked', sessionId: `s${i}` });
+
+  const gap = log.since(1);
+  assert.equal(gap.truncated, true, 'asked for events that aged out');
+  assert.equal(gap.reset, false);
+
+  const reset = log.since(50);
+  assert.equal(reset.reset, true);
+  assert.equal(reset.truncated, false);
+});

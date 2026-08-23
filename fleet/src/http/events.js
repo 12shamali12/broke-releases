@@ -16,6 +16,7 @@
  * changes.
  */
 
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 const DEFAULT_CAPACITY = 500;
@@ -26,10 +27,29 @@ export class EventLog extends EventEmitter {
   #entries = [];
   #capacity;
   #seq = 0;
+  #epoch;
 
-  constructor({ capacity = DEFAULT_CAPACITY } = {}) {
+  constructor({ capacity = DEFAULT_CAPACITY, epoch = randomUUID() } = {}) {
     super();
     this.#capacity = capacity;
+    this.#epoch = epoch;
+  }
+
+  /**
+   * Which run of this daemon these ids belong to.
+   *
+   * Ids restart at 1 on every start, and clients keep their cursor across one.
+   * So a phone that saw six events yesterday reconnects asking for everything
+   * after id 6, and a freshly started daemon holding ids 1 to 6 answers
+   * "nothing has happened" — about six sessions waiting on you. Measured
+   * exactly that way against a real restart.
+   *
+   * The epoch is what lets a client notice the numbering restarted. It is
+   * carried on the fleet payload rather than as its own event type, because
+   * every client already handles that on connect and on reconnect.
+   */
+  get epoch() {
+    return this.#epoch;
   }
 
   /** Monotonic id, so a reconnecting client can say where it got to. */
@@ -57,11 +77,22 @@ export class EventLog extends EventEmitter {
    */
   since(cursor = 0) {
     const from = Number(cursor) || 0;
+
+    // A cursor beyond anything this run has issued belongs to a previous run:
+    // within one run it is impossible. Answering "nothing since then" would be
+    // technically true of these ids and a lie about the world, so the whole
+    // log goes back with a flag saying the numbering restarted.
+    if (from > this.#seq) {
+      return { events: [...this.#entries], cursor: this.#seq, truncated: false, reset: true, epoch: this.#epoch };
+    }
+
     const oldest = this.#entries[0]?.id ?? this.#seq + 1;
     return {
       events: this.#entries.filter((e) => e.id > from),
       cursor: this.#seq,
       truncated: from > 0 && from < oldest - 1,
+      reset: false,
+      epoch: this.#epoch,
     };
   }
 }
@@ -116,8 +147,20 @@ export class StreamHub {
     }
 
     const replay = this.#log.since(since);
-    if (replay.truncated) {
-      res.write(frame({ event: 'stream.gap', data: { since, oldestAvailable: replay.cursor } }));
+    if (replay.truncated || replay.reset) {
+      res.write(frame({
+        event: 'stream.gap',
+        data: {
+          since,
+          oldestAvailable: replay.cursor,
+          // `reset` means the numbering restarted under this client — its
+          // cursor is from a previous run of the daemon, not from a gap in
+          // this one. Different situation, different repair: it has to drop
+          // what it holds rather than assume it has an unbroken history.
+          reset: Boolean(replay.reset),
+          epoch: this.#log.epoch,
+        },
+      }));
     }
     for (const entry of replay.events) {
       res.write(frame({ id: entry.id, event: entry.type, data: entry }));

@@ -168,7 +168,12 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
     let decorated = snooze ? snooze.decorate(fleet) : fleet;
     decorated = tags ? tags.decorate(decorated) : decorated;
     decorated = notes ? notes.decorate(decorated) : decorated;
-    return { ...decorated, health: poller.health };
+    // The event log's epoch travels with every fleet payload — the snapshot
+    // frame the stream sends on connect and on reconnect, and `GET /v1/fleet`.
+    // A client that sees it change knows the id sequence restarted and that
+    // its cursor now points at a different run's events. Carried here rather
+    // than as its own event type because every client already handles this.
+    return { ...decorated, health: poller.health, epoch: log.epoch };
   }
 
   function requireFleet() {

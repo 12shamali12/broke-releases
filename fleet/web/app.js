@@ -17,6 +17,7 @@ const LS = {
   settings: 'fleet.settings',
   cursor: 'fleet.cursor',
   fleetAt: 'fleet.snapshotAt',
+  epoch: 'fleet.epoch',
   drafts: 'fleet.drafts',
 };
 
@@ -115,7 +116,38 @@ async function refresh() {
   setFleet(fleet);
 }
 
+/**
+ * Forget a cursor that belongs to a previous run of the daemon.
+ *
+ * Event ids restart at 1 every time fleetd starts, and this cursor survives in
+ * localStorage. So a phone that saw six events yesterday reconnects asking for
+ * everything after id 6, a freshly started daemon holding ids 1 to 6 answers
+ * "nothing has happened" — and the dedupe below would discard the new ones as
+ * duplicates of the old anyway. Measured against a real restart: six sessions
+ * waiting, and the phone told about none of them.
+ */
+function checkEpoch(fleet) {
+  const epoch = fleet?.epoch;
+  if (!epoch) return;
+  const known = store.get(LS.epoch);
+  if (known === epoch) return;
+
+  if (known) {
+    // A different run. What we hold is numbered against the old one.
+    state.events = [];
+    store.set(LS.cursor, 0);
+    // Clearing is only half the repair. The stream will not resend the new
+    // run's events — the browser reconnects with `Last-Event-ID: 6`, and a
+    // daemon whose fresh log also ends at 6 answers "nothing after that".
+    // Refetching from zero is what actually gets them back, and those are the
+    // "these sessions are waiting for you" alerts a restart produces.
+    queueMicrotask(seedFeed);
+  }
+  store.set(LS.epoch, epoch);
+}
+
 function setFleet(fleet) {
+  checkEpoch(fleet);
   state.fleet = fleet;
   state.fleetAt = Date.now();
   state.error = null;

@@ -17,6 +17,8 @@ const store = {
 const LOOK_DEFAULT = { theme: 'system', size: 'M', face: 'jb', scheme: 'claude', lead: 'normal' };
 
 const state = {
+  /** Which run of the daemon the ids in `events` are numbered against. */
+  epoch: null,
   token: store.get(LS.token),
   fleet: store.get(LS.fleet),
   fleetAt: null,
@@ -64,6 +66,7 @@ async function api(path, options = {}) {
 }
 
 function setFleet(fleet) {
+  checkEpoch(fleet);
   state.fleet = fleet;
   state.fleetAt = Date.now();
   store.set(LS.fleet, fleet);
@@ -89,6 +92,26 @@ const visible = () => (state.tag ? active().filter((s) => s.tags?.includes(state
 
 async function refresh() {
   setFleet(await api('/v1/fleet'));
+}
+
+/**
+ * Forget a cursor and a cache that belong to a previous run of the daemon.
+ *
+ * Event ids restart at 1 on every fleetd start. A tab left open across a
+ * restart holds events numbered against the old run, so the new run's events
+ * collide with them and the dedupe drops exactly the ones that matter.
+ */
+function checkEpoch(fleet) {
+  const epoch = fleet?.epoch;
+  if (!epoch) return;
+  if (state.epoch && state.epoch !== epoch) {
+    state.events = [];
+    // The stream will not resend them: the browser reconnects with the old
+    // run's Last-Event-ID and a fresh log ending at the same number answers
+    // "nothing after that". Refetching from zero is the other half.
+    queueMicrotask(seedEvents);
+  }
+  state.epoch = epoch;
 }
 
 /**

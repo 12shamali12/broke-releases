@@ -497,3 +497,20 @@ test('the wall shows context pressure, since that is what a wall is for', async 
   assert.match(wall[0], /ctx\.known\s*\n?\s*\?/, 'and shown only when there is a reading');
   assert.match(wall[0], /ctx\.hot \? 'ac' : 'ft'/, 'a full window is worth a colour');
 });
+
+for (const client of CLIENTS) {
+  test(`${client.name}: a cursor from a previous daemon run is thrown away`, async () => {
+    // Event ids restart at 1 on every fleetd start, and the phone's cursor
+    // lives in localStorage. Without noticing the restart it asks for
+    // everything after id 6, gets nothing, and would discard the new ids 1-6
+    // as duplicates of the ones it already holds — which is the exact set of
+    // "these sessions are waiting for you" alerts a restart now produces.
+    const src = await read(client.js);
+    assert.match(src, /function checkEpoch/, 'both clients must notice the numbering restarting');
+    const fn = /function checkEpoch\(fleet\)[\s\S]*?\n\}/.exec(src)[0];
+    assert.match(fn, /state\.events = \[\]/, 'the cached events are numbered against the old run');
+    // Called from the one place every fleet payload arrives — snapshot and poll alike.
+    const setFleet = /function setFleet\(fleet\)[\s\S]*?\n\}/.exec(src)[0];
+    assert.match(setFleet, /checkEpoch\(fleet\)/);
+  });
+}
