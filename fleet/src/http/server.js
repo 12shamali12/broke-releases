@@ -639,7 +639,32 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
     }
 
     if (method === 'GET' && path === '/v1/devices') {
-      return send(res, 200, { devices: devices.devices });
+      return send(res, 200, { devices: devices.devices, pairingOpen: devices.pairingOpen });
+    }
+
+    /**
+     * Open a pairing window for a second device.
+     *
+     * Without this you could pair exactly one device, ever: fleetd prints a
+     * code only when it has no devices at all, so the moment you paired the
+     * CLI on the laptop your phone had no way in short of deleting
+     * devices.json — which signs the laptop out. That is the first thing
+     * anyone does after installing it.
+     *
+     * Authenticated, so an already-trusted device is what invites the next
+     * one. That is the whole trust model: the first code comes from the
+     * terminal you are sitting at, and every one after it from a device you
+     * already decided to trust.
+     */
+    if (method === 'POST' && path === '/v1/devices/pair') {
+      const { code, expiresAt } = devices.openPairing();
+      return send(res, 201, {
+        code,
+        expiresAt,
+        // Said explicitly, because a code that silently replaced another
+        // would look like the first one simply stopped working.
+        note: 'single use, expires in ten minutes, and replaces any code already outstanding',
+      });
     }
 
     if (method === 'DELETE' && segments[0] === 'v1' && segments[1] === 'devices' && segments[2]) {

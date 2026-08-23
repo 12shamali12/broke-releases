@@ -410,6 +410,72 @@ test('authorizing the stream needs a bearer, not a cookie', async () => {
   }
 });
 
+/**
+ * You could pair exactly one device, ever.
+ *
+ * fleetd prints a pairing code only when it has no devices at all. So the
+ * moment you paired the CLI on the laptop — the first thing anyone does —
+ * the phone had no way in short of deleting devices.json, which signs the
+ * laptop back out. Nothing reported this; there was simply no second code.
+ */
+test('an already-paired device can invite another one', async () => {
+  const h = await harness();
+  try {
+    await h.poller.tick();
+    const opened = await h.call('/v1/devices/pair', { method: 'POST' });
+    assert.equal(opened.status, 201);
+    const { code, expiresAt } = await opened.json();
+    assert.match(code, /^\d{6}$/);
+    assert.ok(expiresAt > Date.now());
+
+    const paired = await fetch(`${h.base}/v1/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, label: 'phone' }),
+    });
+    assert.equal(paired.status, 201);
+    const { token } = await paired.json();
+
+    // Both devices work. The point of the whole thing is that inviting the
+    // phone does not cost you the laptop.
+    assert.equal((await h.call('/v1/fleet')).status, 200);
+    assert.equal((await fetch(`${h.base}/v1/fleet`, { headers: { authorization: `Bearer ${token}` } })).status, 200);
+
+    const { devices } = await h.call('/v1/devices').then((r) => r.json());
+    assert.deepEqual(devices.map((d) => d.label).sort(), ['phone', 'test-phone']);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('only a trusted device can open a pairing window', async () => {
+  // Otherwise anything that can reach the port can mint itself a code and
+  // walk in — which would make the device gate decorative.
+  const h = await harness();
+  try {
+    const res = await fetch(`${h.base}/v1/devices/pair`, { method: 'POST' });
+    assert.equal(res.status, 401);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('an invitation is single use', async () => {
+  const h = await harness();
+  try {
+    const { code } = await h.call('/v1/devices/pair', { method: 'POST' }).then((r) => r.json());
+    const redeem = () => fetch(`${h.base}/v1/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, label: 'x' }),
+    });
+    assert.equal((await redeem()).status, 201);
+    assert.equal((await redeem()).status, 403, 'a code that worked twice is a code that leaked twice');
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test('a revoked device stops working immediately', async () => {
   const h = await harness();
   try {

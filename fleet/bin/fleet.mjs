@@ -567,7 +567,30 @@ switch (command) {
 
   case 'pair': {
     const code = rest[0];
-    if (!code) die('usage: fleet pair <code>   (fleetd prints one when it starts)');
+
+    // No code: this terminal is already trusted and is inviting something
+    // else — the phone, a tablet, a second laptop. Before this existed you
+    // could pair exactly one device ever, because fleetd only prints a code
+    // when it has no devices at all, and by then the CLI is one.
+    if (!code) {
+      if (!(await token())) {
+        die('not paired yet — start fleetd, then run: fleet pair <code>   (it prints one)');
+      }
+      const { code: issued } = await api('/v1/devices/pair', { method: 'POST' });
+      console.log(`\n  ${C.b}Pairing code: ${issued}${C.off}`);
+      console.log(`  ${C.dim}Enter it in the app within ten minutes. It works once.${C.off}`);
+
+      // The next question is always "at what address?", and 127.0.0.1 is not
+      // an answer a phone can use. Print the one URL that will actually work
+      // from another device, rather than making them run `fleet reach` to
+      // find out why nothing loaded.
+      const port = Number(process.env.FLEET_PORT ?? 8787);
+      const usable = reachOptions({ port }).find((o) => o.available && o.url && o.key !== 'loopback');
+      if (usable) console.log(`  ${C.dim}Open ${usable.url} on that device.${C.off}`);
+      else console.log(`  ${C.dim}No address another device can reach yet — run: fleet reach${C.off}`);
+      console.log('');
+      break;
+    }
     const { token: issued } = await api('/v1/pair', {
       method: 'POST',
       body: JSON.stringify({ code, label: 'cli' }),
@@ -614,7 +637,8 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet alerts quiet 23 8     quiet hours, or: fleet alerts quiet off
   fleet queue                 the command queue
   fleet watch                 live tail of transitions
-  fleet pair <code>           once, against a running fleetd
+  fleet pair                  a code for another device (phone, tablet)
+  fleet pair <code>           redeem one, against a running fleetd
   fleet health
 
 ${C.dim}<ref> is a board position (1, 2, 3…) or a session id.

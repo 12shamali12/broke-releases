@@ -1484,28 +1484,47 @@ function describe(e) {
 function pairView() {
   const input = h('input', {
     inputmode: 'numeric', maxlength: '6', placeholder: '000000',
+    autocomplete: 'one-time-code', 'aria-label': 'Six-digit pairing code', autofocus: true,
     style: 'font-family:var(--mono);font-size:24px;letter-spacing:.34em;text-align:center;width:100%;padding:14px;background:var(--s1);border:1px solid var(--bd2);border-radius:3px;color:var(--tx)',
   });
+  const submit = h('button', {
+    type: 'submit',
+    style: 'width:100%;margin-top:12px;min-height:44px;border-radius:3px;border:none;background:var(--ac);color:var(--onac);font-family:var(--sans);font-size:13.5px;font-weight:700;cursor:pointer',
+  }, 'Pair this cockpit');
+
+  // A form, not an input beside a button: this cockpit's premise is that
+  // nothing needs the mouse, and its very first screen could only be
+  // completed with one. Typing the code and pressing Enter did nothing.
+  const pair = async (e) => {
+    e?.preventDefault();
+    const value = input.value.trim();
+    if (!/^\d{6}$/.test(value)) return toast('The code is six digits.');
+    submit.disabled = true;
+    submit.textContent = 'Pairing…';
+    try {
+      const { token } = await api('/v1/pair', {
+        method: 'POST', body: JSON.stringify({ code: value, label: 'cockpit' }),
+      });
+      state.token = token;
+      store.set(LS.token, token);
+      await refresh();
+      connect();
+    } catch (err) {
+      toast(err.message);
+      submit.disabled = false;
+      submit.textContent = 'Pair this cockpit';
+      input.value = '';
+      input.focus();
+    }
+  };
+
   return h('div', { style: 'flex-grow:1;display:flex;align-items:center;justify-content:center' },
-    h('div', { style: 'width:380px' },
+    h('form', { style: 'width:380px', onsubmit: pair },
       h('h2', { style: 'font-size:22px;font-weight:700;letter-spacing:-.02em;margin:0 0 8px' }, 'Connect to fleetd'),
       h('p', { style: 'font-size:13px;line-height:1.55;color:var(--dm);margin:0 0 20px' },
-        'fleetd prints a six-digit pairing code when it starts. It works once, and expires in ten minutes.'),
+        'Run `fleet pair` on the machine running fleetd for a six-digit code. It works once, and expires in ten minutes.'),
       input,
-      h('button', {
-        style: 'width:100%;margin-top:12px;min-height:44px;border-radius:3px;border:none;background:var(--ac);color:var(--onac);font-family:var(--sans);font-size:13.5px;font-weight:700;cursor:pointer',
-        onclick: async () => {
-          try {
-            const { token } = await api('/v1/pair', {
-              method: 'POST', body: JSON.stringify({ code: input.value.trim(), label: 'cockpit' }),
-            });
-            state.token = token;
-            store.set(LS.token, token);
-            await refresh();
-            connect();
-          } catch (err) { toast(err.message); }
-        },
-      }, 'Pair this cockpit')));
+      submit));
 }
 
 // ---------------------------------------------------------------- render

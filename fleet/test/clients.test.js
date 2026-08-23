@@ -216,3 +216,21 @@ for (const client of CLIENTS) {
     }
   });
 }
+
+for (const client of CLIENTS) {
+  test(`${client.name}: the pairing screen can be finished with the keyboard`, async () => {
+    // It was an input beside a button. Typing the code and pressing Enter did
+    // nothing — no request, no error, no sign anything had happened — on the
+    // first screen anyone ever sees. A real form is what gives a phone
+    // keyboard its Go key and makes Enter mean submit.
+    const src = await read(client.js);
+    const pairView = /function (?:viewPair|pairView)\(\)[\s\S]*?\n\}/.exec(src);
+    assert.ok(pairView, 'both clients have a pairing view');
+    const body = pairView[0];
+    assert.match(body, /h\('form'/, 'the pairing screen must be a form');
+    assert.match(body, /onsubmit:/);
+    assert.match(body, /type: 'submit'/, 'or Enter has nothing to activate');
+    assert.match(body, /preventDefault/, 'or submitting reloads the page and loses the code');
+    assert.match(body, /autofocus/, 'the code field is the only thing on screen to type into');
+  });
+}

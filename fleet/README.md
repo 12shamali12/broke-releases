@@ -55,6 +55,7 @@ answer.
 ```
 GET    /v1/health                    liveness; detail only when authenticated
 POST   /v1/pair                      {code} -> {token}, once per window
+POST   /v1/devices/pair              a code for another device (authenticated)
 GET    /v1/fleet                     board + counts + health (staleness)
 GET    /v1/fleet/:id                 one session + its queued commands
 POST   /v1/fleet/:id/send            {text}
@@ -64,6 +65,7 @@ POST   /v1/fleet/:id/compact         {focus?}
 POST   /v1/fleet/:id/rename          {title}
 POST   /v1/fleet/:id/snooze          {hours} -> mutes alerts, never the board
 DELETE /v1/fleet/:id/snooze
+POST   /v1/stream/authorize         bearer -> cookie scoped to /v1/stream
 GET    /v1/stream                    SSE: snapshot, then live events
 GET    /v1/events?since=<cursor>     replay, with a truncation flag
 GET    /v1/search?q=

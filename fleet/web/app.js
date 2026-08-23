@@ -386,33 +386,70 @@ async function refreshMetrics() {
 
 // ---------------------------------------------------------------- views
 
+/**
+ * A name you can pick out of a list when revoking something.
+ *
+ * The user-agent's first forty characters are `Mozilla/5.0 (iPhone; CPU iPhone
+ * OS 17_` — which is not a device, it is a prefix shared by every iPhone.
+ */
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const kind = /iPhone/.test(ua) ? 'iPhone'
+    : /iPad/.test(ua) ? 'iPad'
+    : /Android/.test(ua) ? 'Android phone'
+    : /Macintosh/.test(ua) ? 'Mac'
+    : /Windows/.test(ua) ? 'Windows PC'
+    : /Linux/.test(ua) ? 'Linux' : 'device';
+  const browser = /CriOS|Chrome/.test(ua) ? 'Chrome'
+    : /Firefox/.test(ua) ? 'Firefox'
+    : /Safari/.test(ua) ? 'Safari' : null;
+  return browser ? `${kind} · ${browser}` : kind;
+}
+
 function viewPair() {
   const code = h('input', { id: 'code', inputmode: 'numeric', maxlength: '6', placeholder: '000000',
-    autocomplete: 'one-time-code', 'aria-label': 'Six-digit pairing code',
+    autocomplete: 'one-time-code', 'aria-label': 'Six-digit pairing code', autofocus: true,
     style: 'font-family:var(--mono);font-size:22px;letter-spacing:.3em;text-align:center' });
 
-  return h('div', { class: 'scroll', style: 'padding-top:24px' },
+  const submit = h('button', { class: 'primary', style: 'width:100%', type: 'submit' }, 'Pair this phone');
+
+  const pair = async (e) => {
+    // A real form, so the phone keyboard shows Go and pressing it works.
+    // Before this the screen was an input beside a button, and typing the
+    // code and hitting Go did nothing at all — no request, no error, no
+    // sign anything had happened. It is the first screen anyone sees.
+    e?.preventDefault();
+    const value = code.value.trim();
+    if (!/^\d{6}$/.test(value)) return toast('The code is six digits.');
+
+    submit.disabled = true;
+    submit.textContent = 'Pairing…';
+    try {
+      const { token } = await api('/v1/pair', {
+        method: 'POST',
+        body: JSON.stringify({ code: value, label: deviceLabel() }),
+      });
+      state.token = token;
+      store.set(LS.token, token);
+      await refresh();
+      connect();
+    } catch (err) {
+      toast(err.message);
+      // Back to a usable state: a code that failed is usually a code that
+      // expired, and the next thing you do is type a fresh one.
+      submit.disabled = false;
+      submit.textContent = 'Pair this phone';
+      code.value = '';
+      code.focus();
+    }
+  };
+
+  return h('form', { class: 'scroll', style: 'padding-top:24px', onsubmit: pair },
     h('h1', {}, 'Connect to your laptop'),
     h('p', { style: 'font-size:14px;line-height:1.55;color:var(--dm);margin:9px 0 22px' },
-      'Start fleetd on the machine that runs your sessions. It prints a six-digit code.'),
-    h('div', { class: 'field' }, h('label', {}, 'Pairing code'), code),
-    h('button', {
-      class: 'primary', style: 'width:100%',
-      onclick: async () => {
-        try {
-          const { token } = await api('/v1/pair', {
-            method: 'POST',
-            body: JSON.stringify({ code: code.value.trim(), label: navigator.userAgent.slice(0, 40) }),
-          });
-          state.token = token;
-          store.set(LS.token, token);
-          await refresh();
-          connect();
-        } catch (err) {
-          toast(err.message);
-        }
-      },
-    }, 'Pair this phone'),
+      'Start fleetd on the machine that runs your sessions, then run `fleet pair` there for a six-digit code.'),
+    h('div', { class: 'field' }, h('label', { for: 'code' }, 'Pairing code'), code),
+    submit,
     h('div', { class: 'banner', style: 'margin:22px 0 0' },
       h('h3', {}, 'What this phone gets'),
       h('p', {}, 'A token that talks to fleetd and nothing else. Your Anthropic credentials never leave the laptop, and revoking this device touches nothing else.')));
