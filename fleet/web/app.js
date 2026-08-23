@@ -117,10 +117,44 @@ function setFleet(fleet) {
 
 let source = null;
 
-function connect() {
-  if (!state.token || source) return;
+/**
+ * Get the stream cookie before opening the stream.
+ *
+ * Cheap, idempotent, and needed on every cold start: a client that paired
+ * earlier has a token in localStorage but no cookie.
+ */
+async function authorizeStream() {
+  try {
+    await api('/v1/stream/authorize', { method: 'POST' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Guard against a second connect() landing while the first is still awaiting
+ * its cookie. `source` is only set after the await, so it cannot do this job.
+ */
+let connecting = false;
+
+async function connect() {
+  if (!state.token || source || connecting) return;
+  connecting = true;
+  try {
+    // The cookie must exist before the EventSource opens, or the stream 401s
+    // and the browser retries forever against a gate it can never pass.
+    if (!(await authorizeStream())) return;
+    if (!state.token) return; // unpaired while we were awaiting
+  } finally {
+    connecting = false;
+  }
+
   const since = store.get(LS.cursor, 0);
-  source = new EventSource(`/v1/stream?since=${since}`);
+  // `withCredentials` so the scoped stream cookie is sent. EventSource cannot
+  // set an Authorization header, which is why the live stream returned 401 in
+  // every browser until this existed — see /v1/stream/authorize.
+  source = new EventSource(`/v1/stream?since=${since}`, { withCredentials: true });
 
   source.addEventListener('open', () => {
     state.connected = true;
@@ -229,7 +263,12 @@ const h = (tag, attrs = {}, ...children) => {
     else if (k.startsWith('on')) el.addEventListener(k.slice(2).toLowerCase(), v);
     else el.setAttribute(k, v === true ? '' : String(v));
   }
-  for (const child of children.flat()) {
+  // flat(Infinity), not flat(). A one-level flatten turns a nested array
+  // into a text node reading "[object HTMLDivElement],[object …" — which is
+  // exactly what the cockpit's session rail rendered, because rail() returns
+  // [groupHeader, rows.map(…)] per lane and the inner array survived. It
+  // renders, it does not throw, and no syntax check sees it.
+  for (const child of children.flat(Infinity)) {
     if (child == null || child === false) continue;
     el.append(child.nodeType ? child : document.createTextNode(String(child)));
   }
@@ -1108,7 +1147,10 @@ function render() {
   const changed = render.lastKey !== key;
 
   preserveFocus(() => {
-    app.replaceChildren(...[body].flat().filter(Boolean), ...(nav ? [nav] : []));
+    // Same reason as `h()`: a view that returns a conditional array — as the
+    // session view does for its history section — nests one level deeper than
+    // a single flatten reaches.
+    app.replaceChildren(...[body].flat(Infinity).filter(Boolean), ...(nav ? [nav] : []));
   }, { keepScroll: !changed });
 
   // Both cues are one-shot. Disarming after the DOM exists means the animation

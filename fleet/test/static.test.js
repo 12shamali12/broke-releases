@@ -126,3 +126,29 @@ test('a POST is not served from the static tree', async () => {
     await s.cleanup();
   }
 });
+
+test('the favicon a browser asks for on its own is served, not 401d', async () => {
+  // Chromium requests /favicon.ico whatever the page declares. There is no
+  // such file, so it fell through to the API router and came back 401 —
+  // a console error on every page load that reads like broken auth.
+  const s = await serving({ 'index.html': 'SHELL', 'icon.svg': '<svg/>' });
+  try {
+    const res = await fetch(`${s.base}/favicon.ico`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /image\/svg\+xml/, 'typed by what it actually is');
+    assert.equal(await res.text(), '<svg/>');
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('the favicon alias cannot be used to escape the root', async () => {
+  const s = await serving({ 'index.html': 'SHELL' });
+  try {
+    // No icon.svg to alias to: it must 404 like any other missing asset, and
+    // must not fall back to the shell just because the alias rewrote the path.
+    assert.equal((await fetch(`${s.base}/favicon.ico`)).status, 404);
+  } finally {
+    await s.cleanup();
+  }
+});

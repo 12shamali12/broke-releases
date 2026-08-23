@@ -48,6 +48,13 @@ export function createStaticHandler({ root, index = 'index.html' }) {
   return async function serve(req, res, urlPath) {
     if (req.method !== 'GET' && req.method !== 'HEAD') return false;
 
+    // Browsers ask for /favicon.ico on their own, whatever the page declares,
+    // and there is no file to answer with. Without this the request falls
+    // through to the API router and comes back 401 — a console error on every
+    // single page load, and one that reads like the auth is broken. Aliasing it
+    // costs nothing and the browser gets a real icon.
+    if (urlPath === '/favicon.ico') urlPath = '/icon.svg';
+
     let path = safeResolve(root, urlPath);
     if (!path) return false;
 
@@ -87,7 +94,22 @@ export function createStaticHandler({ root, index = 'index.html' }) {
       'content-security-policy': [
         "default-src 'self'",
         "script-src 'self'",
-        "style-src 'self' https://fonts.googleapis.com",
+        // 'unsafe-inline' for STYLE only, and deliberately.
+        //
+        // Both clients build their DOM in JavaScript and lay it out with
+        // `style` attributes throughout. Without this, every one of them is
+        // refused: measured in a real browser, 202 violations on one page load,
+        // and the result is an app that renders but looks broken. No amount of
+        // syntax checking finds that — only opening it does.
+        //
+        // The risk this reopens is style injection, which needs an injection
+        // point. There is none: `h()` puts every text child through
+        // createTextNode, and the only innerHTML in either client is a fixed
+        // SVG string this repository owns. Session titles and status lines —
+        // the one place untrusted text enters — are text nodes.
+        //
+        // script-src stays strict, which is the half that matters.
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src https://fonts.gstatic.com",
         "img-src 'self' data:",
         "connect-src 'self'",

@@ -164,6 +164,53 @@ export class DeviceStore {
 }
 
 /** `Authorization: Bearer <token>` — the only accepted form. */
+/**
+ * The token an SSE connection carries, which cannot be a header.
+ *
+ * `EventSource` has no way to set `Authorization` — the browser API simply
+ * does not expose it. So the live stream, the whole reason this design chose
+ * SSE, was returning 401 in both clients and had never once worked in a
+ * browser. `fleet watch` worked, because it uses `fetch`.
+ *
+ * A cookie rather than a query parameter, deliberately. The design puts a
+ * Cloudflare Tunnel in front of this, and tunnels log URLs — a token in a query
+ * string is a credential that can message every session, written into somebody
+ * else's logs. A cookie scoped to this one path, HttpOnly and SameSite=Strict,
+ * is never in a URL, unreadable from JavaScript, and not sent cross-site.
+ */
+export const STREAM_COOKIE = 'fleet_stream';
+
+export function cookieFrom(req, name = STREAM_COOKIE) {
+  const header = req.headers?.cookie;
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {boolean} secure  only over TLS. Loopback is plain http, and marking
+ *   the cookie Secure there would stop it being sent at all.
+ */
+export function streamCookie(token, { secure = false } = {}) {
+  return [
+    `${STREAM_COOKIE}=${encodeURIComponent(token)}`,
+    // Scoped to the one route that needs it. Nothing else accepts it.
+    'Path=/v1/stream',
+    'HttpOnly',
+    'SameSite=Strict',
+    secure ? 'Secure' : null,
+  ].filter(Boolean).join('; ');
+}
+
 export function bearerFrom(req) {
   const header = req.headers?.authorization;
   if (!header) return null;

@@ -7,7 +7,7 @@
  */
 
 import { createServer } from 'node:http';
-import { bearerFrom } from './auth.js';
+import { bearerFrom, cookieFrom, streamCookie } from './auth.js';
 import { EventLog, StreamHub } from './events.js';
 import { createStaticHandler } from './static.js';
 import { createMcpHandler, handleBatch } from './mcp.js';
@@ -17,6 +17,19 @@ import { BULK_LIMIT, selectSessions } from '../tags.js';
 // Re-exported so existing importers keep working; it is defined with the
 // selection logic it constrains.
 export { BULK_LIMIT };
+
+/**
+ * Whether this request reached us over TLS.
+ *
+ * Loopback is plain http, and marking the stream cookie `Secure` there would
+ * stop the browser sending it at all — the bug this whole change exists to
+ * fix, reintroduced. Behind a tunnel the proxy says so.
+ */
+function isSecure(req) {
+  if (req.socket?.encrypted) return true;
+  const forwarded = req.headers?.['x-forwarded-proto'];
+  return String(forwarded ?? '').split(',')[0].trim() === 'https';
+}
 
 /**
  * How a command you issued reads in a session's history.
@@ -226,7 +239,11 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
 
     // --- everything below needs a device ---
 
-    const device = devices.verify(bearerFrom(req));
+    // `/v1/stream` is the one route that may present a cookie instead, because
+    // EventSource cannot send a header. Every other route stays header-only.
+    const device = devices.verify(
+      bearerFrom(req) ?? (path === '/v1/stream' ? cookieFrom(req) : null),
+    );
     if (!device) throw new HttpError(401, 'device token required');
     devices.touch(device).catch(() => {});
 
@@ -567,6 +584,22 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
         sessionId: null,
       });
       return send(res, 200, result);
+    }
+
+    /**
+     * Hand the browser its stream cookie.
+     *
+     * Authenticated by the ordinary bearer token, so only a paired device can
+     * get one. Exists because a client that paired earlier already has a token
+     * in localStorage but no cookie, and because `EventSource` cannot present
+     * that token itself.
+     */
+    if (method === 'POST' && path === '/v1/stream/authorize') {
+      const token = bearerFrom(req);
+      // `device` is already verified above; the raw token is what goes in the
+      // cookie so the same verification path applies on the stream request.
+      res.setHeader('set-cookie', streamCookie(token, { secure: isSecure(req) }));
+      return send(res, 200, { ok: true, note: 'the cookie is scoped to /v1/stream and is not readable from JavaScript' });
     }
 
     if (method === 'GET' && path === '/v1/stream') {

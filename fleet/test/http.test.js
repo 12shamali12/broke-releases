@@ -321,6 +321,95 @@ test('the stream sends a snapshot then live events, and resumes from a cursor', 
   }
 });
 
+/**
+ * The bug this covers: `EventSource` has no way to set an Authorization
+ * header, so the one route the whole product is built around was the one
+ * route the bearer token could not reach. The live stream returned 401 in
+ * every browser, silently, while every other call authenticated fine — the
+ * board just never updated on its own and looked merely slow.
+ */
+test('the stream can be reached by a browser, which cannot send a bearer', async () => {
+  const h = await harness();
+  try {
+    await h.poller.tick();
+
+    // What a browser actually does: no Authorization header at all.
+    const bare = await fetch(`${h.base}/v1/stream`);
+    assert.equal(bare.status, 401, 'and this is what EventSource was hitting');
+    await bare.body?.cancel();
+
+    const authorized = await h.call('/v1/stream/authorize', { method: 'POST' });
+    assert.equal(authorized.status, 200);
+    const cookie = authorized.headers.get('set-cookie');
+    assert.match(cookie, /^fleet_stream=/);
+    assert.match(cookie, /HttpOnly/, 'or any script on the page can read the token');
+    assert.match(cookie, /SameSite=Strict/, 'the cookie is the whole credential; it must not travel cross-site');
+    assert.match(cookie, /Path=\/v1\/stream/, 'scoped to the one route that needs it, not to the API');
+
+    const value = /^fleet_stream=([^;]+)/.exec(cookie)[1];
+    const res = await fetch(`${h.base}/v1/stream`, { headers: { cookie: `fleet_stream=${value}` } });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'text/event-stream');
+    await res.body.cancel();
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('the stream cookie opens nothing but the stream', async () => {
+  // A cookie that authenticated the whole API would turn a read-only escape
+  // hatch into a CSRF-shaped way to send messages to every session.
+  const h = await harness();
+  try {
+    await h.poller.tick();
+    const cookie = (await h.call('/v1/stream/authorize', { method: 'POST' })).headers.get('set-cookie');
+    const value = /^fleet_stream=([^;]+)/.exec(cookie)[1];
+    const headers = { cookie: `fleet_stream=${value}` };
+
+    assert.equal((await fetch(`${h.base}/v1/fleet`, { headers })).status, 401);
+    assert.equal((await fetch(`${h.base}/v1/events?since=0`, { headers })).status, 401);
+    const sent = await fetch(`${h.base}/v1/fleet/${SESSION_ID}/send`, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    assert.equal(sent.status, 401, 'the read-only cookie must never be able to write');
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('a revoked device revokes its stream cookie too', async () => {
+  // The cookie carries the same token, so it verifies through the same path —
+  // which is the reason it carries the token rather than a second secret.
+  const h = await harness();
+  try {
+    await h.poller.tick();
+    const cookie = (await h.call('/v1/stream/authorize', { method: 'POST' })).headers.get('set-cookie');
+    const value = /^fleet_stream=([^;]+)/.exec(cookie)[1];
+
+    const { devices } = await h.call('/v1/devices').then((r) => r.json());
+    await h.call(`/v1/devices/${devices[0].id}`, { method: 'DELETE' });
+
+    const res = await fetch(`${h.base}/v1/stream`, { headers: { cookie: `fleet_stream=${value}` } });
+    assert.equal(res.status, 401);
+    await res.body?.cancel();
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('authorizing the stream needs a bearer, not a cookie', async () => {
+  // Otherwise the cookie could renew itself forever and revocation would only
+  // hold until the next reconnect.
+  const h = await harness();
+  try {
+    assert.equal((await fetch(`${h.base}/v1/stream/authorize`, { method: 'POST' })).status, 401);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test('a revoked device stops working immediately', async () => {
   const h = await harness();
   try {

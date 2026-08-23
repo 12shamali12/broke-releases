@@ -143,3 +143,27 @@ test('phone: the board entrance animation is gated, not unconditional', async ()
   assert.match(css, /\.card\.enter \{[\s\S]*?animation:/);
   assert.match(js, /state\.seen\.has\(s\.id\) \? '' : ' enter'/);
 });
+
+for (const client of CLIENTS) {
+  test(`${client.name}: children are flattened all the way down`, async () => {
+    // A one-level flatten turns a nested array into a text node reading
+    // "[object HTMLDivElement],[object …". It renders, it does not throw, and
+    // no syntax check sees it. The cockpit's entire session rail was doing
+    // exactly that — rail() returns [groupHeader, rows.map(…)] per lane, and
+    // the inner array survived `.flat()`. Found by opening it in a browser.
+    const src = await read(client.js);
+    assert.doesNotMatch(src, /\.flat\(\)/, 'use flat(Infinity)');
+    assert.match(src, /\.flat\(Infinity\)/);
+  });
+}
+
+test('the CSP allows the inline styles both clients actually use', async () => {
+  // Both clients lay out in `style` attributes. With a strict style-src every
+  // one is refused: 202 violations on a single page load, measured in a real
+  // browser, and an app that renders but looks broken.
+  const src = await read('src/http/static.js');
+  assert.match(src, /style-src[^"]*'unsafe-inline'/);
+  // And the half that matters stays strict.
+  assert.match(src, /"script-src 'self'"/);
+  assert.doesNotMatch(src, /script-src[^"]*unsafe-inline/);
+});

@@ -100,9 +100,36 @@ const EVENT_TYPES = [
   'session.modelChanged', 'session.effortChanged', 'rate.limited', 'rate.overage', 'command.failed',
 ];
 
-function connect() {
-  if (!state.token || source) return;
-  source = new EventSource('/v1/stream');
+/**
+ * Get the stream cookie before opening the stream.
+ *
+ * EventSource cannot set an Authorization header, so the stream is the one
+ * route the bearer token cannot reach. `POST /v1/stream/authorize` exchanges
+ * the token for a cookie scoped to /v1/stream and nothing else — without this
+ * the live stream 401s in every browser, which is exactly what it did.
+ */
+async function authorizeStream() {
+  try {
+    await api('/v1/stream/authorize', { method: 'POST' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `source` is only set after the await, so it cannot guard re-entry itself. */
+let connecting = false;
+
+async function connect() {
+  if (!state.token || source || connecting) return;
+  connecting = true;
+  try {
+    if (!(await authorizeStream())) return;
+    if (!state.token) return;
+  } finally {
+    connecting = false;
+  }
+  source = new EventSource('/v1/stream', { withCredentials: true });
   source.addEventListener('open', () => { state.connected = true; render(); });
   source.addEventListener('error', () => { state.connected = false; render(); });
   source.addEventListener('fleet.snapshot', (e) => setFleet(JSON.parse(e.data)));
@@ -133,7 +160,12 @@ const h = (tag, attrs = {}, ...kids) => {
     else if (k.startsWith('on')) el.addEventListener(k.slice(2).toLowerCase(), v);
     else el.setAttribute(k, v === true ? '' : String(v));
   }
-  for (const kid of kids.flat()) {
+  // flat(Infinity), not flat(). A one-level flatten turns a nested array
+  // into a text node reading "[object HTMLDivElement],[object …" — which is
+  // exactly what the cockpit's session rail rendered, because rail() returns
+  // [groupHeader, rows.map(…)] per lane and the inner array survived. It
+  // renders, it does not throw, and no syntax check sees it.
+  for (const kid of kids.flat(Infinity)) {
     if (kid == null || kid === false) continue;
     el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
   }
