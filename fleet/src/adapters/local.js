@@ -677,9 +677,42 @@ export class LocalAdapter {
       return { ok: true, detail: parts.join(' · ') };
     } catch (err) {
       if (err?.code === 'ENOENT') return { ok: false, detail: 'claude CLI not on PATH' };
-      return { ok: false, detail: err.message };
+      return { ok: false, detail: describeAgentsFailure(err, this.#bin) };
     }
   }
+}
+
+/**
+ * What went wrong with `claude agents --json`, in words worth reading.
+ *
+ * `execFile` rejects with "Command failed: /long/path/to/claude agents --json
+ * --all" and puts the only useful part — what the CLI actually said — in
+ * `stderr`, where nothing was looking. On the machine that matters this is the
+ * first thing `fleet doctor` prints when nothing works, and it was printing a
+ * path back at you.
+ */
+export function describeAgentsFailure(err, bin = 'claude') {
+  const stderr = String(err?.stderr ?? '').trim().split('\n').find((l) => l.trim()) ?? '';
+
+  // The one that will actually happen: a Claude Code old enough not to have
+  // the subcommand. Fleet's whole read path is `claude agents --json`, so
+  // "unknown command" means "upgrade", not "something went wrong".
+  if (/unknown command|unrecognized|not a( valid)? command|no such command/i.test(stderr)) {
+    return `this Claude Code does not have \`claude agents\` — upgrade it, or point FLEET_CLAUDE_BIN at one that does`;
+  }
+  if (/not logged in|log ?in|authenticat/i.test(stderr)) {
+    return `${stderr} — run: claude auth login`;
+  }
+  if (err?.killed || /ETIMEDOUT|timed out/i.test(err?.message ?? '')) {
+    return `\`${bin} agents --json\` did not answer in time`;
+  }
+  if (stderr) return stderr;
+
+  // A JSON or shape error from `agents()` above carries its own sentence.
+  const message = String(err?.message ?? '').trim();
+  return /^Command failed/.test(message)
+    ? `\`${bin} agents --json\` failed with no explanation (exit ${err?.code ?? '?'})`
+    : message || 'could not read sessions';
 }
 
 async function exists(path) {

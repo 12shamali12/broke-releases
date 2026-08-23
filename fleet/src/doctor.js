@@ -188,11 +188,15 @@ export async function probeSessions(adapter) {
     if (!result?.ok) {
       const detail = result?.detail ?? 'could not read sessions';
       // "run: claude agents --json" is useless advice when the reason is that
-      // there is no `claude` to run. The CLI check above already names the
-      // real fix, so point at that rather than repeating a broken command.
+      // there is no `claude` to run, and worse than useless when the detail
+      // already says what to do — printing "upgrade it, or point
+      // FLEET_CLAUDE_BIN at one that does → see what it says: claude agents
+      // --json" gives someone two instructions that disagree.
       const fix = /not on PATH/i.test(detail)
         ? 'install Claude Code, or set FLEET_CLAUDE_BIN to its path'
-        : 'see what it says: claude agents --json';
+        : /upgrade|run:|FLEET_CLAUDE_BIN/i.test(detail)
+          ? null
+          : 'see what it says: claude agents --json';
       return check('sessions visible', FAIL, detail, fix);
     }
     if (/^0 session/.test(result.detail ?? '')) {

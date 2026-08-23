@@ -13,7 +13,7 @@ import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { LocalAdapter, isCloudAddressable, needsActionFrom, projectSlug, readTranscript, remoteUrl, tailLines, toRawRecord, trailingQuestion } from '../src/adapters/local.js';
+import { LocalAdapter, describeAgentsFailure, isCloudAddressable, needsActionFrom, projectSlug, readTranscript, remoteUrl, tailLines, toRawRecord, trailingQuestion } from '../src/adapters/local.js';
 import { normalizeFleet } from '../src/model.js';
 
 const entry = (over = {}) => JSON.stringify({
@@ -849,4 +849,59 @@ test('a little clock skew between the file and this process is tolerated', () =>
   const now = Date.parse('2026-08-23T04:00:00.000Z');
   const record = toRawRecord({ sessionId: 's-x', cwd: '/home/dev/x' }, null, { now, mtime: now + 2_000 });
   assert.equal(record.updated_at, new Date(now + 2_000).toISOString());
+});
+
+
+// ------------------------------------------------- when the CLI says no
+
+/**
+ * `execFile` rejects with "Command failed: /long/path/to/claude agents --json
+ * --all" and puts the only useful part — what the CLI actually said — in
+ * `stderr`, where nothing was looking. This is the first line `fleet doctor`
+ * prints on a machine where nothing works, and it was printing a path back.
+ */
+test('an old Claude Code is told to upgrade, not shown a shell error', () => {
+  // The one that will actually happen. Fleet's whole read path is `claude
+  // agents --json`, so "unknown command" means "upgrade", not "try again".
+  const detail = describeAgentsFailure({ stderr: "error: unknown command 'agents'", code: 2 });
+  assert.match(detail, /upgrade/);
+  assert.doesNotMatch(detail, /Command failed/);
+});
+
+test('not being logged in says so, and how to fix it', () => {
+  const detail = describeAgentsFailure({ stderr: 'Not logged in.', code: 1 });
+  assert.match(detail, /Not logged in/);
+  assert.match(detail, /claude auth login/);
+});
+
+test('whatever the CLI said is preferred to whatever the shell said', () => {
+  const detail = describeAgentsFailure({
+    stderr: 'something specific went wrong',
+    message: 'Command failed: /usr/local/bin/claude agents --json --all',
+  });
+  assert.equal(detail, 'something specific went wrong');
+});
+
+test('a failure with nothing to say does not pretend otherwise', () => {
+  // And does not paste a filesystem path into the diagnostic either.
+  const detail = describeAgentsFailure(
+    { message: 'Command failed: /home/someone/bin/claude agents --json --all', code: 3 },
+    'claude',
+  );
+  assert.match(detail, /no explanation/);
+  assert.match(detail, /exit 3/);
+  assert.doesNotMatch(detail, /home\/someone/);
+});
+
+test('a timeout is reported as a timeout', () => {
+  assert.match(describeAgentsFailure({ killed: true, message: 'timeout' }, 'claude'), /did not answer in time/);
+});
+
+test('an error carrying its own sentence is passed through', () => {
+  // `agents()` throws "did not return an array" itself; that is already the
+  // explanation and must not be replaced with a generic one.
+  assert.equal(
+    describeAgentsFailure({ message: 'claude agents --json did not return an array' }),
+    'claude agents --json did not return an array',
+  );
 });
