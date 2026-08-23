@@ -16,6 +16,7 @@ const LS = {
   outbox: 'fleet.outbox',
   settings: 'fleet.settings',
   cursor: 'fleet.cursor',
+  fleetAt: 'fleet.snapshotAt',
   drafts: 'fleet.drafts',
 };
 
@@ -48,7 +49,17 @@ const store = {
 const state = {
   token: store.get(LS.token),
   fleet: store.get(LS.fleet),
-  fleetAt: null,
+  /**
+   * When that cached board was taken.
+   *
+   * Persisted with it, not left null on a cold start. `staleness()` needs an
+   * age to decide anything, so a restored board with no age could never be
+   * marked dated — it came back reading "live · — ago", which is both halves
+   * of the one promise this file opens with, broken by the same missing
+   * number. An offline reload showed a board from any point in the past with
+   * a green dot next to it.
+   */
+  fleetAt: store.get(LS.fleetAt),
   events: [],
   outbox: store.get(LS.outbox, []),
   // Half-typed messages, per session. Persisted because iOS discards a
@@ -108,8 +119,10 @@ function setFleet(fleet) {
   state.fleet = fleet;
   state.fleetAt = Date.now();
   state.error = null;
-  // Cached so a cold open with no tunnel still shows the last known board.
+  // Cached so a cold open with no tunnel still shows the last known board —
+  // with the time it was taken, which is what lets it be shown as dated.
   store.set(LS.fleet, fleet);
+  store.set(LS.fleetAt, state.fleetAt);
   render();
 }
 
@@ -223,7 +236,11 @@ async function dispatch(sessionId, verb, payload, label) {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    toast(result.reachable ? 'Sent' : 'Queued — session is unreachable');
+    // "Queued", never "Sent". The API returns 202 and the queue then retries —
+    // pressing the button has never once meant the message arrived. A toast
+    // that says Sent is the same lie the history was telling, in the more
+    // prominent place: it is the last thing you see before locking the phone.
+    toast(result.reachable ? 'Queued — it will arrive shortly' : 'Queued — held until this session is reachable');
     return result;
   } catch (err) {
     if (err.status && err.status < 500) {
@@ -363,7 +380,10 @@ function staleness() {
   const health = state.fleet?.health;
   const offline = !state.online || !state.connected;
   const age = state.fleetAt ? Date.now() - state.fleetAt : null;
-  return { stale: Boolean(health?.stale) || (offline && age != null && age > 60_000), age, offline };
+  // An unknown age is not evidence of freshness. Requiring `age != null` here
+  // meant a restored board with no timestamp — the exact case this exists for
+  // — was reported as live.
+  return { stale: Boolean(health?.stale) || (offline && (age == null || age > 60_000)), age, offline };
 }
 
 function go(view, selected = null) {
@@ -607,26 +627,33 @@ function viewBoard() {
   // A tag filter narrows whatever lane you are in, rather than replacing it:
   // "blocked, in the importer work" is the question people actually have.
   const shown = state.tag ? byLane.filter((s) => s.tags?.includes(state.tag)) : byLane;
-  const { stale, age } = staleness();
+  const { stale, age, offline } = staleness();
   const rl = fleet.rateLimit;
 
   const head = h('div', { class: 'head' },
     h('div', { class: 'head-row' },
       h('h1', {}, 'Fleet'),
       h('span', { class: 'grow' }),
-      stale
-        ? h('span', { class: 'pill warn', role: 'status' }, h('span', { class: 'dot ac', 'aria-hidden': 'true' }), 'offline')
+      // Three states, not two. The pill was binary — stale or "live" — so a
+      // phone with its network off, holding a board from thirty seconds ago,
+      // displayed a green dot and the word live. That is a claim about the
+      // connection, and it was false. "live" now means the stream is actually
+      // connected; anything else says what it is.
+      offline
+        ? h('span', { class: `pill${stale ? ' warn' : ''}`, role: 'status' },
+            h('span', { class: `dot ${stale ? 'ac' : 'ft'}`, 'aria-hidden': 'true' }),
+            stale ? 'offline' : 'reconnecting')
         : h('span', { class: 'pill', role: 'status' }, h('span', { class: 'dot ok', 'aria-hidden': 'true' }), 'live'),
       h('button', { class: 'icon', style: 'min-height:38px;height:38px', 'aria-label': 'Start a session', onclick: () => go('spawn') },
         icon('<path d="M12 5v14M5 12h14"/>'))),
     h('div', { class: 'sub' },
-      h('span', {}, `${fleet.counts.active} active · ${ago(age)} ago`),
+      h('span', {}, `${fleet.counts.active} active · ${age == null ? 'age unknown' : `${ago(age)} ago`}`),
       h('span', { class: 'grow' }),
       rl?.resetsAt ? h('span', {}, `5h resets ${ago(rl.resetsAt - Date.now())}`) : null));
 
   const banner = stale
     ? h('div', { class: 'banner' },
-        h('h3', {}, `Showing the board from ${ago(age)} ago`),
+        h('h3', {}, age == null ? 'Showing the last board this phone saw' : `Showing the board from ${ago(age)} ago`),
         h('p', {}, 'Your laptop cannot be reached, so sessions may have moved on since.'))
     : null;
 

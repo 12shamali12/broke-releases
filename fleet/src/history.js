@@ -52,11 +52,18 @@ const PHRASING = {
   'session.modelChanged': (e) => ({ text: `Model changed to ${e.detail}`, tone: 'ft', actor: 'session' }),
   'session.effortChanged': (e) => ({ text: `Effort changed to ${e.detail}`, tone: 'ft', actor: 'session' }),
 
-  'you.sent': (e) => ({ text: e.detail ? `You sent: ${e.detail}` : 'You sent a message', tone: 'wk', actor: 'you' }),
-  'you.stopped': () => ({ text: 'You stopped the turn', tone: 'ac', actor: 'you' }),
+  // "Queued", not "sent". Nothing in Fleet ever reports a message as sent at
+  // the moment you press the button — the API returns 202 and the queue
+  // retries — and this line was the one place that claimed otherwise. Found
+  // by reading a real history that said "You sent: deploy to staging please"
+  // above a command that had failed four attempts and never arrived. There is
+  // already a separate entry, `command.sent`, for when it actually lands; the
+  // wording here was throwing that distinction away.
+  'you.sent': (e) => ({ text: e.detail ? `You queued: ${e.detail}` : 'You queued a message', tone: 'wk', actor: 'you' }),
+  'you.stopped': () => ({ text: 'You asked it to stop', tone: 'ac', actor: 'you' }),
   'you.model': (e) => ({ text: `You asked for ${e.detail}`, tone: 'wk', actor: 'you' }),
-  'you.effort': (e) => ({ text: `You set effort to ${e.detail}`, tone: 'wk', actor: 'you' }),
-  'you.compact': () => ({ text: 'You compacted the context', tone: 'wk', actor: 'you' }),
+  'you.effort': (e) => ({ text: `You asked for effort ${e.detail}`, tone: 'wk', actor: 'you' }),
+  'you.compact': () => ({ text: 'You asked it to compact the context', tone: 'wk', actor: 'you' }),
   'you.snoozed': (e) => ({ text: `You muted alerts for ${e.detail}`, tone: 'ft', actor: 'you' }),
   'you.woke': () => ({ text: 'You turned alerts back on', tone: 'ft', actor: 'you' }),
   'you.noted': () => ({ text: 'You wrote a note', tone: 'ft', actor: 'you' }),

@@ -318,7 +318,11 @@ async function dispatch(sessionId, verb, payload) {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    toast(result.reachable ? 'Sent' : 'Queued — session is unreachable');
+    // "Queued", never "Sent". The API returns 202 and the queue then retries —
+    // pressing the button has never once meant the message arrived. A toast
+    // that says Sent is the same lie the history was telling, in the more
+    // prominent place: it is the last thing you see before locking the phone.
+    toast(result.reachable ? 'Queued — it will arrive shortly' : 'Queued — held until this session is reachable');
     return result;
   } catch (err) {
     toast(err.message);

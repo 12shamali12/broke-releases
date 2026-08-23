@@ -379,3 +379,18 @@ for (const client of CLIENTS) {
     assert.match(before, /some\(\(e\) => e\.id === event\.id\)/, 'dedupe by id before adding');
   });
 }
+
+for (const client of CLIENTS) {
+  test(`${client.name}: pressing send never reports the message as sent`, async () => {
+    // `POST /v1/fleet/:id/send` returns 202 with a pending command; the queue
+    // then retries. Nothing has arrived at the moment the button is pressed,
+    // and a toast reading "Sent" is the last thing you see before locking the
+    // phone. Found next to a real history entry saying "You sent: …" above a
+    // command that had failed four attempts.
+    const src = await read(client.js);
+    const call = /toast\(result\.reachable \?[^)]*\)/.exec(src);
+    assert.ok(call, 'both clients toast the outcome of a dispatch');
+    assert.doesNotMatch(call[0], /'Sent'/, 'the API returned 202, not a delivery');
+    assert.match(call[0], /Queued/);
+  });
+}

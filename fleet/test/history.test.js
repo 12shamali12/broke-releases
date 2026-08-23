@@ -35,7 +35,7 @@ test('your actions and the session\'s are recorded together, in order', async ()
   // Newest first: coming back to a session, the last thing that happened is
   // the thing you need.
   assert.deepEqual(entries.map((e) => e.actor), ['session', 'you', 'session']);
-  assert.match(entries[1].text, /^You sent:/);
+  assert.match(entries[1].text, /^You queued:/);
   assert.match(entries[2].text, /^Blocked:/);
 });
 
@@ -194,5 +194,28 @@ test('recalling a message is recorded, not erased', async () => {
   const entries = h.for('s1');
   assert.equal(entries.length, 2, 'the send is still there');
   assert.match(entries[0].text, /^You recalled/);
-  assert.match(entries[1].text, /^You sent/);
+  assert.match(entries[1].text, /^You queued/);
+});
+
+test('nothing in a history claims a message was sent when it was only queued', async () => {
+  // Read from a real fleetd: "You sent: deploy to staging please", printed
+  // above a command that had failed four attempts and never arrived. The API
+  // returns 202 and the queue retries — nothing is sent at the moment you
+  // press the button, and this was the one line that said otherwise.
+  const yours = describe({ type: 'you.sent', detail: 'deploy to staging' });
+  assert.match(yours.text, /queued/i);
+  assert.doesNotMatch(yours.text, /\bsent\b/i);
+
+  // The distinction has to survive: there is a separate entry for the moment
+  // it actually lands, and that one may say so.
+  assert.match(describe({ type: 'command.sent', detail: 'message' }).text, /delivered/i);
+});
+
+test('every entry for something you asked for reads as a request, not a result', async () => {
+  // A history that reports intentions as outcomes is worse than no history:
+  // it is the thing you check to find out whether your message got through.
+  for (const type of ['you.sent', 'you.stopped', 'you.model', 'you.effort', 'you.compact']) {
+    const { text } = describe({ type, detail: 'x' });
+    assert.match(text, /^You (queued|asked)/, `${type} reads as done rather than requested: "${text}"`);
+  }
 });
