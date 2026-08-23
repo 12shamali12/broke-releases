@@ -691,7 +691,12 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
       // whole fleet — which is the opposite of what revoking a lost phone is
       // for.
       const cut = streamHub.closeFor(segments[2]);
-      return send(res, 200, { ok: true, streamsClosed: cut });
+      // And its push subscriptions. Otherwise the phone you just revoked
+      // because you lost it keeps putting your session titles and the
+      // questions they are waiting on onto its lock screen — a leak that
+      // arrives without anyone opening anything.
+      const unsubscribed = push ? await push.forgetDevice(segments[2]) : 0;
+      return send(res, 200, { ok: true, streamsClosed: cut, pushSubscriptionsRemoved: unsubscribed });
     }
 
     if (segments[0] === 'v1' && segments[1] === 'fleet' && segments[2]) {

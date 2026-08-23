@@ -13,6 +13,7 @@ import { DeviceStore, hashToken, tokensMatch } from '../src/http/auth.js';
 import { EventLog, frame } from '../src/http/events.js';
 import { createFleetServer, matchSessions, validateCommand } from '../src/http/server.js';
 import { Metrics } from '../src/metrics.js';
+import { PushService } from '../src/push/index.js';
 import { NotificationService } from '../src/notify/index.js';
 import { SnoozeStore } from '../src/snooze.js';
 import { TagStore } from '../src/tags.js';
@@ -23,7 +24,7 @@ const SNAPSHOTS = JSON.parse(await readFile(FIXTURE, 'utf8'));
 const SESSION_ID = 'session_01FIXTUREaaaaaaaaaaaaaaaa';
 const UNREACHABLE_ID = 'session_01FIXTUREbbbbbbbbbbbbbbbb';
 
-async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = false, withTags = false } = {}) {
+async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = false, withTags = false, withPush = false } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'fleet-http-'));
   const queue = await CommandQueue.open({ path: join(dir, 'commands.json') });
   const devices = await DeviceStore.open({ path: join(dir, 'devices.json') });
@@ -43,7 +44,10 @@ async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = fal
     ? new NotificationService({ push: null, queue, snooze: snoozeStore, metrics })
     : null;
   const tagStore = withTags ? new TagStore({}) : null;
-  const { server, log, hub } = createFleetServer({ poller, queue, devices, metrics, notify, snooze: snoozeStore, tags: tagStore });
+  const pushService = withPush ? await PushService.open({ path: join(dir, 'push.json') }) : null;
+  const { server, log, hub } = createFleetServer({
+    poller, queue, devices, metrics, notify, snooze: snoozeStore, tags: tagStore, push: pushService,
+  });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -65,7 +69,7 @@ async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = fal
     });
 
   return {
-    base, call, poller, queue, devices, log, hub, metrics, notify, snoozeStore, tagStore, token: paired.token,
+    base, call, poller, queue, devices, log, hub, metrics, notify, snoozeStore, tagStore, push: pushService, token: paired.token,
     cleanup: async () => {
       hub.close();
       await new Promise((r) => server.close(r));
@@ -74,6 +78,7 @@ async function harness({ snapshots = SNAPSHOTS, metrics = null, withNotify = fal
       // intermittent ENOTEMPTY that reads as a flaky test and is really a
       // shutdown with no way to wait.
       await devices.drain();
+      await pushService?.drain();
       notify?.stop();
       await rm(dir, { recursive: true, force: true });
     },
@@ -1140,6 +1145,35 @@ test('revoking a device ends the stream it already holds', async () => {
       const { done } = await reader.read();
       if (done) break;
     }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('revoking a device reports what it took away', async () => {
+  // The response is the only place anyone sees whether revocation actually
+  // reached the things that matter — an open stream and a push subscription
+  // both outlive the token check that let them start.
+  const h = await harness({ withPush: true });
+  try {
+    await h.poller.tick();
+    const { devices } = await h.call('/v1/devices').then((r) => r.json());
+
+    // A subscription registered by this device, exactly as the phone does it.
+    const subscribed = await h.call('/v1/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({
+        endpoint: 'https://push.example/gone',
+        keys: { p256dh: 'BJ' + 'A'.repeat(85), auth: 'B'.repeat(22) },
+      }),
+    });
+    assert.equal(subscribed.status, 201);
+    assert.equal(h.push.subscriptions.length, 1);
+
+    const body = await h.call(`/v1/devices/${devices[0].id}`, { method: 'DELETE' }).then((r) => r.json());
+    assert.equal(body.ok, true);
+    assert.equal(body.pushSubscriptionsRemoved, 1, 'the lock screen is the leak revoking has to close');
+    assert.equal(h.push.subscriptions.length, 0);
   } finally {
     await h.cleanup();
   }

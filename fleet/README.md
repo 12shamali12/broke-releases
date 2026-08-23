@@ -30,7 +30,7 @@ comes from the terminal you are sitting at, and every one after it from
 something you have already decided to trust.
 
 ```
-npm test                        # 535 tests, no network, no CLI, no credentials
+npm test                        # 539 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs reach        # how to open it from your phone
@@ -70,10 +70,13 @@ and Docker or VM bridges are all filtered out, because offering `172.17.0.1` as
 "try this from your phone" is worse than offering nothing — it looks like an
 answer.
 
-Revoking a device ends the streams it already holds. The token is checked when
-a stream opens and not again, so without that a revoked phone kept receiving the
-whole fleet — every title, every status line, every question — for as long as
-its connection survived. Revocation that waits for a network hiccup is not
+Revoking a device ends the streams it already holds and forgets the push
+subscriptions it registered. Both outlive the token check that let them start:
+a stream is authorised when it opens and not again, and a push subscription is
+held by the push service, not by fleetd. Without closing them, a revoked phone
+kept receiving the whole fleet for as long as its connection survived, and kept
+putting session titles and the questions they were waiting on onto its lock
+screen indefinitely. Revocation that waits for a network hiccup is not
 revocation.
 
 `/v1/health` and `/v1/pair` are open; everything else needs a device token.

@@ -130,6 +130,24 @@ export class PushService {
   }
 
   /**
+   * Forget every subscription belonging to a device.
+   *
+   * You revoke a phone because you no longer have it. Leaving its push
+   * subscription in place means it keeps receiving your session titles and the
+   * questions they are waiting on, on the lock screen of a device someone else
+   * is holding — which is a worse leak than the API access revoking was meant
+   * to close, because it arrives without anyone opening anything.
+   */
+  async forgetDevice(deviceId) {
+    if (!deviceId) return 0;
+    const before = this.#subscriptions.length;
+    this.#subscriptions = this.#subscriptions.filter((s) => s.deviceId !== deviceId);
+    const removed = before - this.#subscriptions.length;
+    if (removed) await this.#persist();
+    return removed;
+  }
+
+  /**
    * Send one notification to every subscription.
    *
    * A 404 or 410 means the browser threw the subscription away — that is not an

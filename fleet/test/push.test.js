@@ -344,3 +344,61 @@ test('a send that throws still clears from the in-flight set', async () => {
     await s.cleanup();
   }
 });
+
+
+test('revoking a device forgets the push subscriptions it registered', async () => {
+  // You revoke a phone because you no longer have it. Leaving its push
+  // subscription in place means it keeps receiving your session titles and the
+  // questions they are waiting on, on the lock screen of a device someone else
+  // is holding — a worse leak than the API access revoking was meant to close,
+  // because it arrives without anyone opening anything.
+  const s = await service();
+  try {
+    const sub = fakeSubscriber();
+    const keys = { p256dh: sub.p256dh, auth: sub.auth };
+    await s.svc.subscribe({ endpoint: 'https://push.example/a', keys, deviceId: 'phone' });
+    await s.svc.subscribe({ endpoint: 'https://push.example/b', keys, deviceId: 'phone' });
+    await s.svc.subscribe({ endpoint: 'https://push.example/c', keys, deviceId: 'laptop' });
+
+    assert.equal(await s.svc.forgetDevice('phone'), 2);
+    assert.deepEqual(s.svc.subscriptions.map((x) => x.deviceId), ['laptop'], 'the laptop keeps hers');
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('the removal survives a restart, which is the point of persisting it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-push-revoke-'));
+  const path = join(dir, 'push.json');
+  try {
+    const sub = fakeSubscriber();
+    const keys = { p256dh: sub.p256dh, auth: sub.auth };
+    const first = await PushService.open({ path });
+    await first.subscribe({ endpoint: 'https://push.example/a', keys, deviceId: 'phone' });
+    await first.subscribe({ endpoint: 'https://push.example/c', keys, deviceId: 'laptop' });
+    await first.forgetDevice('phone');
+    await first.drain();
+
+    const reopened = await PushService.open({ path });
+    assert.deepEqual(reopened.subscriptions.map((x) => x.deviceId), ['laptop']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('forgetting a device nobody registered changes nothing', async () => {
+  const s = await service();
+  try {
+    const sub = fakeSubscriber();
+    await s.svc.subscribe({
+      endpoint: 'https://push.example/a',
+      keys: { p256dh: sub.p256dh, auth: sub.auth },
+      deviceId: 'phone',
+    });
+    assert.equal(await s.svc.forgetDevice('never-seen'), 0);
+    assert.equal(await s.svc.forgetDevice(null), 0);
+    assert.equal(s.svc.subscriptions.length, 1);
+  } finally {
+    await s.cleanup();
+  }
+});
