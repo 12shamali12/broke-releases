@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { contextWindowFor } from '../src/model.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -261,5 +262,52 @@ test('every verb the API accepts is recorded in a session history', async () => 
   // And every type that mapping can produce must be one the history can say.
   for (const m of mapping.matchAll(/'(you\.[a-zA-Z]+)'/g)) {
     assert.ok(phrasing.has(m[1]), `historyFor produces ${m[1]}, which history.js cannot phrase`);
+  }
+});
+
+
+/**
+ * The effort levels exist in five places and no two of them are the same file.
+ *
+ * The server validates against one list, the cockpit renders a menu from
+ * another, the phone renders chips from a third, the MCP tool declares a
+ * fourth as its enum, and the CLI prints a fifth in its usage line. They agree
+ * today by nothing but attention.
+ */
+test('every surface offers exactly the effort levels the server accepts', async () => {
+  const read = (p) => readFile(join(ROOT, p), 'utf8');
+  const levels = (text) => {
+    const m = /'low',\s*'medium',\s*'high',\s*'xhigh',\s*'max'/.exec(text);
+    return m ? m[0].match(/'([a-z]+)'/g).map((s) => s.slice(1, -1)) : null;
+  };
+
+  const server = levels(await read('src/http/server.js'));
+  assert.deepEqual(server, ['low', 'medium', 'high', 'xhigh', 'max'], 'the server is the authority');
+
+  for (const file of ['web-cockpit/cockpit.js', 'web/app.js', 'src/http/mcp.js']) {
+    assert.deepEqual(levels(await read(file)), server, `${file} offers a different set`);
+  }
+
+  // The CLI states them in prose, so it is checked as prose.
+  const cli = await read('bin/fleet.mjs');
+  for (const level of server) {
+    assert.ok(cli.includes(level), `the CLI's usage line does not mention ${level}`);
+  }
+});
+
+test('the models the cockpit offers have the context window it claims', async () => {
+  // The menu prints "1M" or "200K" beside each model, and the meter divides by
+  // whatever `contextWindowFor` decides. If those disagree the bar is wrong,
+  // and it is wrong quietly — five times too full, or five times too empty.
+  const src = await readFile(join(ROOT, 'web-cockpit/cockpit.js'), 'utf8');
+  const list = /const MODELS = \[([\s\S]*?)\];/.exec(src);
+  assert.ok(list, 'the cockpit declares a model list');
+
+  const rows = [...list[1].matchAll(/\['([^']+)',\s*'[^']*',\s*'([^']+)'/g)];
+  assert.ok(rows.length >= 3, `expected several models, found ${rows.length}`);
+
+  for (const [, id, claimed] of rows) {
+    const real = contextWindowFor(id) >= 1_000_000 ? '1M' : '200K';
+    assert.equal(real, claimed, `${id}: the menu says ${claimed}, contextWindowFor says ${real}`);
   }
 });
