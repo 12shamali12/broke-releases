@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isReachableFromPhone, lanAddresses, reachOptions } from '../src/reach.js';
+import { displayHost, isReachableFromPhone, lanAddresses, reachOptions } from '../src/reach.js';
 
 const iface = (address, over = {}) => ({ address, family: 'IPv4', internal: false, ...over });
 
@@ -91,4 +91,32 @@ test('loopback is correctly reported as unreachable from a phone', () => {
   for (const host of ['0.0.0.0', '192.168.1.20']) {
     assert.equal(isReachableFromPhone(host), true, host);
   }
+});
+
+test('a bind address is not a URL you can open', () => {
+  // fleetd printed "phone app http://0.0.0.0:8787/" whenever anyone followed
+  // its own advice to use --host 0.0.0.0. Nothing can open that — not the
+  // phone it was printed for, not the machine it was printed on — and it
+  // fails with no hint about why.
+  const nics = {
+    eth0: [{ family: 'IPv4', address: '192.168.1.40', internal: false }],
+    docker0: [{ family: 'IPv4', address: '172.17.0.1', internal: false }],
+    lo: [{ family: 'IPv4', address: '127.0.0.1', internal: true }],
+  };
+  assert.equal(displayHost('0.0.0.0', nics), '192.168.1.40');
+  assert.equal(displayHost('::', nics), '192.168.1.40', 'the v6 wildcard is the same mistake');
+
+  // The substitute goes through the same filtering as everything else, so a
+  // Docker bridge is never handed over as "try this from your phone".
+  assert.notEqual(displayHost('0.0.0.0', nics), '172.17.0.1');
+
+  // An explicit host is left alone, whatever it is.
+  assert.equal(displayHost('127.0.0.1', nics), '127.0.0.1');
+  assert.equal(displayHost('192.168.1.40', nics), '192.168.1.40');
+});
+
+test('a machine with no usable address still gets a URL that works somewhere', () => {
+  // Loopback beats the wildcard: it works on this machine, which is more than
+  // 0.0.0.0 manages anywhere.
+  assert.equal(displayHost('0.0.0.0', { lo: [{ family: 'IPv4', address: '127.0.0.1', internal: true }] }), '127.0.0.1');
 });

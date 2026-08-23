@@ -95,3 +95,20 @@ export function reachOptions({ port = 8787, interfaces = networkInterfaces() } =
 export function isReachableFromPhone(host) {
   return host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
 }
+
+/**
+ * The address to print, given the address we bound to.
+ *
+ * `0.0.0.0` answers "can a phone reach this" with yes and "where do I go"
+ * with nothing at all — it is a bind, not a destination. Nothing can open it:
+ * not the phone it was printed for, not the machine it was printed on. fleetd
+ * printed exactly that as the URL to visit whenever anyone followed its own
+ * advice to use `--host 0.0.0.0`, and the link simply failed.
+ *
+ * Falls back to loopback rather than to the wildcard, because a URL that works
+ * on this machine only is still better than one that works nowhere.
+ */
+export function displayHost(host, interfaces = networkInterfaces()) {
+  if (host !== '0.0.0.0' && host !== '::' && host !== '') return host;
+  return lanAddresses(interfaces)[0]?.address ?? '127.0.0.1';
+}

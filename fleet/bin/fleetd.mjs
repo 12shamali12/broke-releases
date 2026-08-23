@@ -25,7 +25,7 @@ import { NotificationService } from '../src/notify/index.js';
 import { TagStore } from '../src/tags.js';
 import { NoteStore } from '../src/notes.js';
 import { HistoryStore } from '../src/history.js';
-import { isReachableFromPhone, reachOptions } from '../src/reach.js';
+import { displayHost, isReachableFromPhone, reachOptions } from '../src/reach.js';
 import { SnoozeStore } from '../src/snooze.js';
 import { createFleetServer } from '../src/http/server.js';
 
@@ -148,9 +148,12 @@ poller.on('error', (err) => console.error('[fleetd]', err));
 
 await new Promise((resolve) => server.listen(port, host, resolve));
 
+// A bind is not a destination — see displayHost.
+const shown = displayHost(host);
+
 console.log(`${C.b}fleetd${C.off} ${C.dim}listening on http://${host}:${port} · adapter ${adapter.name} · poll ${intervalMs / 1000}s${C.off}`);
-console.log(`${C.dim}phone app   http://${host}:${port}/${C.off}`);
-console.log(`${C.dim}cockpit     http://${host}:${port}/cockpit${C.off}`);
+console.log(`${C.dim}phone app   http://${shown}:${port}/${C.off}`);
+console.log(`${C.dim}cockpit     http://${shown}:${port}/cockpit${C.off}`);
 console.log(`${C.dim}push        ${push.size} subscription(s) · quiet hours 23:00–08:00${C.off}`);
 media.probe().then((m) =>
   console.log(m.available
