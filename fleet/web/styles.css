@@ -215,7 +215,7 @@ nav button {
   font-size: 10px; font-weight: 600; color: var(--ft);
 }
 nav button[aria-current="page"] { color: var(--ac); }
-nav svg { width: 19px; height: 19px; }
+nav .ico { width: 19px; height: 19px; }
 
 /* ---- toast ---- */
 #toast {
@@ -337,3 +337,14 @@ nav svg { width: 19px; height: 19px; }
   }
   #toast { transform: translate(-50%, 0); }
 }
+
+/* ---- icons ----
+   Sized in em so they track the text, and sized at all — which they were not.
+   An inline <svg> with no width falls back to 300x150, so every icon in this
+   app rendered enormous or clipped to an empty box, depending on whether its
+   container let it overflow. Nothing in the DOM said so. */
+.ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.15em; height: 1.15em; flex: 0 0 auto;
+}
+.ico svg { width: 100%; height: 100%; display: block; }

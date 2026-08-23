@@ -13,7 +13,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { FAIL, OK, UNKNOWN, authChecks, diagnose, summarise, withTimeout } from '../src/doctor.js';
+import { FAIL, OK, UNKNOWN, authChecks, diagnose, probeSessions, summarise, withTimeout } from '../src/doctor.js';
 
 /** A fake execFile driven by a script of {command: result | Error}. */
 function exec(script = {}) {
@@ -254,4 +254,47 @@ test('the auth JSON never leaks into the report', async () => {
     assert.doesNotMatch(JSON.stringify(c), /sk-secret/, 'a secret reached the report');
     assert.doesNotMatch(c.detail, /[{}]/, 'raw JSON reached the report');
   }
+});
+
+// ---------------------------------------------------------------- sessions
+
+/**
+ * The check that decides whether the board is empty tomorrow morning.
+ *
+ * Every other check can pass on a machine where Fleet shows nothing at all,
+ * and an empty board under six green ticks is the worst possible diagnostic:
+ * it says the tool is fine and leaves you with nowhere to go.
+ */
+test('doctor reports how many sessions this machine can actually see', async () => {
+  const out = await probeSessions({ probe: async () => ({ ok: true, detail: '6 session(s) · 1 can be messaged' }) });
+  assert.equal(out.state, OK);
+  assert.match(out.detail, /6 session/);
+});
+
+test('no sessions is unknown, not a failure', async () => {
+  // A laptop with no Claude Code running is in a perfectly normal state. It is
+  // only a problem if you expected some, and only you know that.
+  const out = await probeSessions({ probe: async () => ({ ok: true, detail: '0 session(s) · 0 can be messaged' }) });
+  assert.equal(out.state, UNKNOWN);
+  assert.match(out.fix, /start a Claude Code session/);
+});
+
+test('being unable to check is not the same as having checked', async () => {
+  assert.equal((await probeSessions(null)).state, UNKNOWN);
+  const threw = await probeSessions({ probe: async () => { throw new Error('boom'); } });
+  assert.equal(threw.state, UNKNOWN, 'a thrown probe must not be reported as "no sessions"');
+});
+
+test('a missing CLI is not answered with a command that needs the CLI', async () => {
+  const out = await probeSessions({ probe: async () => ({ ok: false, detail: 'claude CLI not on PATH' }) });
+  assert.equal(out.state, FAIL);
+  assert.doesNotMatch(out.fix, /^run: claude/, 'telling someone to run the thing that is missing helps nobody');
+  assert.match(out.fix, /FLEET_CLAUDE_BIN|install/);
+});
+
+test('a probe that hangs still produces a report', async () => {
+  // The one moment this tool must not hang is the moment someone runs it
+  // because something is already wrong.
+  const out = await probeSessions({ probe: () => new Promise(() => {}) });
+  assert.equal(out.state, UNKNOWN);
 });

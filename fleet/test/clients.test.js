@@ -234,3 +234,35 @@ for (const client of CLIENTS) {
     assert.match(body, /autofocus/, 'the code field is the only thing on screen to type into');
   });
 }
+
+for (const client of CLIENTS) {
+  test(`${client.name}: inline icons are given a size`, async () => {
+    // An inline <svg> with no width or height falls back to its intrinsic
+    // 300x150. Every icon in both clients did exactly that: the phone's header
+    // button was an empty box, and the cockpit's search magnifier rendered
+    // 300px square and covered the session rail underneath it — which read as
+    // "the rail is empty", not as an icon bug. Nothing in the DOM said so and
+    // no test could have; it took looking at a screenshot.
+    const js = await read(client.js);
+    const css = await read(client.css);
+    if (!/<svg/.test(js)) return;
+
+    // Every element that inlines an <svg> must carry a class the CSS can reach.
+    const helpers = callSites(js, ['span', 'div']).filter((c) => c.attrs.includes('<svg'));
+    assert.ok(helpers.length, 'expected at least one inline-svg helper');
+    for (const helper of helpers) {
+      assert.match(helper.attrs, /class: (?:'ico'|cls)/, 'an icon helper must carry the class that sizes it');
+    }
+    // A helper that takes its class as a parameter is only as good as its
+    // callers, so check them too rather than trusting the signature.
+    for (const call of js.matchAll(/\bsvg\((?:[^()]|\([^()]*\))*\)/g)) {
+      assert.match(call[0], /,\s*'ico'\s*\)$/, `an icon call passes no sizing class: ${call[0].slice(0, 50)}`);
+    }
+
+    // And that class must actually be sized, in both dimensions.
+    const rule = /\.ico\s*\{([^}]*)\}/.exec(css);
+    assert.ok(rule, 'the stylesheet must define .ico');
+    assert.match(rule[1], /width:/);
+    assert.match(rule[1], /height:/);
+  });
+}

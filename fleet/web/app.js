@@ -275,8 +275,18 @@ const h = (tag, attrs = {}, ...children) => {
   return el;
 };
 
+/**
+ * An inline icon.
+ *
+ * The `ico` class is not decoration — it is the only thing that gives the
+ * `<svg>` a size. Without it an inline SVG falls back to its intrinsic
+ * 300x150, and every icon in this app rendered at that size, overflowing or
+ * clipping to an empty box depending on its container. It was invisible in
+ * the DOM and obvious the moment anyone looked at a screenshot.
+ */
 const icon = (d) =>
   h('span', {
+    class: 'ico',
     'aria-hidden': 'true',
     html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`,
   });

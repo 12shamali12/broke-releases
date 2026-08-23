@@ -46,7 +46,7 @@ body {
   padding: 0 16px; background: var(--s1); border-bottom: 1px solid var(--bd);
 }
 .brand { display: flex; align-items: center; gap: 9px; font-size: 13.5px; font-weight: 700; letter-spacing: -.01em; }
-.brand svg { width: 17px; height: 17px; color: var(--ac); }
+.brand .ico { width: 17px; height: 17px; color: var(--ac); }
 .grow { flex-grow: 1; }
 
 .chip {
@@ -506,3 +506,17 @@ kbd.hot { color: var(--ac); background: var(--acf); border-color: var(--acb); }
      a static gradient reads as content. Flatten it to a plain ground. */
   .skel { animation: none !important; background: var(--s2) !important; }
 }
+
+/* ---- icons ----
+   `svg()` renders <svg style="width:100%;height:100%"> inside a span, so the
+   span is what has to have a size — and no rule ever gave it one. Every icon
+   in this cockpit rendered at whatever its flex parent offered: the search
+   magnifier came out 300px square and covered the session rail underneath it,
+   which read as "the rail is empty" rather than as an icon bug.
+
+   Sized in em so they follow the text-size control rather than ignoring it. */
+.ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.15em; height: 1.15em; flex: 0 0 auto;
+}
+.ico svg { display: block; }

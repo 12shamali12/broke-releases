@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ago, freshness, resolveRef } from '../src/cli-helpers.js';
 import { FAIL, OK, UNKNOWN, diagnose } from '../src/doctor.js';
+import { LocalAdapter } from '../src/adapters/local.js';
 import { reachOptions } from '../src/reach.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -338,7 +339,14 @@ switch (command) {
   case 'doctor': {
     // Deliberately does not need fleetd, or a token, or the network. It is the
     // thing you run when nothing else works.
-    const { checks, summary } = await diagnose({ stateDir: join(ROOT, '.state'), port: Number(process.env.FLEET_PORT ?? 8787) });
+    const { checks, summary } = await diagnose({
+      stateDir: join(ROOT, '.state'),
+      port: Number(process.env.FLEET_PORT ?? 8787),
+      // The check that decides whether the board is empty. Passing the real
+      // adapter is what makes doctor answer "will this show me anything"
+      // rather than only "could it start".
+      adapter: new LocalAdapter(),
+    });
 
     console.log(`\n${C.b}Can this machine run Fleet?${C.off}\n`);
     for (const c of checks) {
@@ -352,7 +360,15 @@ switch (command) {
 
     console.log('');
     if (summary.ready) {
-      console.log(`  ${C.ok}Ready.${C.off} ${C.dim}Next: node bin/spike.mjs — reads only, changes nothing.${C.off}\n`);
+      // The next step is starting the thing, not running the spike. The spike
+      // answered a question that is now answered: this machine reads its own
+      // sessions, and doctor just said how many.
+      const seen = checks.find((c) => c.name === 'sessions visible');
+      console.log(`  ${C.ok}Ready.${C.off} ${C.dim}Next: node bin/fleetd.mjs${C.off}`);
+      if (seen?.state !== OK) {
+        console.log(`  ${C.dim}The board will be empty until a Claude Code session is running on this machine.${C.off}`);
+      }
+      console.log('');
     } else {
       console.log(`  ${C.ac}Not ready yet.${C.off} ${C.dim}In order:${C.off}`);
       for (const [i, fix] of summary.next.entries()) console.log(`    ${i + 1}. ${fix}`);

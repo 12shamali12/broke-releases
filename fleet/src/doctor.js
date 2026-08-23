@@ -72,6 +72,7 @@ export async function diagnose({
   nodeVersion = process.versions.node,
   platform = process.platform,
   probePort = defaultProbePort,
+  adapter = null,
 } = {}) {
   const checks = [];
 
@@ -150,11 +151,60 @@ export async function diagnose({
         : check('port', FAIL, `${port} is already in use`, `stop whatever is on ${port}, or set FLEET_PORT`),
   );
 
+  // --- can it actually see anything? -------------------------------------
+  // The check that decides whether the board is empty tomorrow morning.
+  // Everything above can pass on a machine where Fleet shows nothing at all,
+  // and an empty board with six green ticks above it is the worst possible
+  // diagnostic: it says the tool is fine and leaves you with no next step.
+  checks.push(await probeSessions(adapter));
+
   // --- media control, which is honest about being optional ---------------
   const media = await probeMedia(exec, platform);
   checks.push(media);
 
   return { checks, summary: summarise(checks) };
+}
+
+
+/**
+ * How many sessions this machine can actually see.
+ *
+ * `unknown` rather than `fail` when the adapter cannot be built: not being
+ * able to check is genuinely different from having checked and found nothing,
+ * and the whole point of the third state is not to guess between them.
+ *
+ * Zero sessions is `unknown` too, and deliberately. A laptop with no Claude
+ * Code sessions running is a laptop in a perfectly normal state — it is only
+ * a problem if you expected some, and only you know that.
+ */
+export async function probeSessions(adapter) {
+  if (!adapter) return check('sessions visible', UNKNOWN, 'not checked from here');
+  try {
+    const result = await withTimeout(
+      Promise.resolve(adapter.probe()),
+      FS_TIMEOUT_MS,
+      'reading sessions took too long',
+    );
+    if (!result?.ok) {
+      const detail = result?.detail ?? 'could not read sessions';
+      // "run: claude agents --json" is useless advice when the reason is that
+      // there is no `claude` to run. The CLI check above already names the
+      // real fix, so point at that rather than repeating a broken command.
+      const fix = /not on PATH/i.test(detail)
+        ? 'install Claude Code, or set FLEET_CLAUDE_BIN to its path'
+        : 'see what it says: claude agents --json';
+      return check('sessions visible', FAIL, detail, fix);
+    }
+    if (/^0 session/.test(result.detail ?? '')) {
+      return check(
+        'sessions visible', UNKNOWN, 'none found',
+        'start a Claude Code session, then re-run — Fleet reads this machine only',
+      );
+    }
+    return check('sessions visible', OK, result.detail);
+  } catch (err) {
+    return check('sessions visible', UNKNOWN, cleanish(err), 'if this persists, run: claude agents --json');
+  }
 }
 
 /**
