@@ -25,6 +25,7 @@ import { NotificationService } from '../src/notify/index.js';
 import { TagStore } from '../src/tags.js';
 import { NoteStore } from '../src/notes.js';
 import { HistoryStore } from '../src/history.js';
+import { isReachableFromPhone, reachOptions } from '../src/reach.js';
 import { SnoozeStore } from '../src/snooze.js';
 import { createFleetServer } from '../src/http/server.js';
 
@@ -155,9 +156,36 @@ media.probe().then((m) =>
 if (devices.isEmpty) {
   const { code } = devices.openPairing();
   console.log(`\n  ${C.b}Pairing code: ${code}${C.off}`);
-  console.log(`  ${C.dim}Enter it in the app within 10 minutes. It works once.${C.off}\n`);
+  console.log(`  ${C.dim}Enter it in the app within 10 minutes. It works once.${C.off}`);
+
+  // The question everyone hits next: the phone cannot reach 127.0.0.1, and
+  // without saying so here, the first experience of the phone app is a
+  // connection that fails for a reason nothing on screen explains.
+  if (!isReachableFromPhone(host)) {
+    const [, lan, tunnel] = reachOptions({ port });
+    console.log(`\n  ${C.dim}Your phone cannot reach ${host} — that is loopback, and the bind${C.off}`);
+    console.log(`  ${C.dim}stays there on purpose: this API can message every session you have.${C.off}`);
+    console.log(`\n  ${C.dim}Two ways to let it in:${C.off}`);
+    if (lan.available) {
+      console.log(`    ${C.ok}·${C.off} same Wi-Fi:  ${C.b}node bin/fleetd.mjs --host 0.0.0.0${C.off}`);
+      console.log(`      ${C.dim}then open ${lan.url} on the phone${C.off}`);
+      console.log(`      ${C.dim}${lan.cost}${C.off}`);
+    }
+    console.log(`    ${C.ok}·${C.off} anywhere:    ${C.dim}${tunnel.cost}${C.off}`);
+    console.log(`      ${C.dim}${tunnel.detail}${C.off}`);
+  }
+  console.log('');
 } else {
   console.log(`${C.dim}${devices.devices.length} paired device(s)${C.off}`);
+}
+
+// Bound to everything: worth saying every time, not only on first run.
+if (isReachableFromPhone(host)) {
+  const [, lan] = reachOptions({ port });
+  console.log(
+    `${C.warn}!${C.off} ${C.dim}bound to ${host} — anything on your network can reach this API.${C.off}` +
+      (lan.url ? `\n  ${C.dim}on the phone: ${lan.url}${C.off}` : ''),
+  );
 }
 
 poller.start();

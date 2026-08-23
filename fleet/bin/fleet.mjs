@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ago, freshness, resolveRef } from '../src/cli-helpers.js';
 import { FAIL, OK, UNKNOWN, diagnose } from '../src/doctor.js';
+import { reachOptions } from '../src/reach.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TOKEN_PATH = join(ROOT, '.state', 'cli.json');
@@ -309,6 +310,24 @@ switch (command) {
     break;
   }
 
+  case 'reach': {
+    // Answerable without restarting the daemon, and without it running at all:
+    // "why can't my phone see this" is a question you have while looking at
+    // the phone, not while looking at fleetd's startup output.
+    const port = Number(process.env.FLEET_PORT ?? 8787);
+    console.log(`\n${C.b}Opening Fleet from another device${C.off}\n`);
+    for (const o of reachOptions({ port })) {
+      const mark = o.available ? `${C.ok}·${C.off}` : `${C.dim}·${C.off}`;
+      console.log(`  ${mark} ${C.b}${o.title}${C.off}`);
+      if (o.url) console.log(`      ${o.url}`);
+      if (o.detail) console.log(`      ${C.dim}${o.detail}${C.off}`);
+      if (o.cost) console.log(`      ${C.dim}${o.cost}${C.off}`);
+      if (o.key === 'lan' && o.available) console.log(`      ${C.dim}start with: node bin/fleetd.mjs --host 0.0.0.0${C.off}`);
+      console.log('');
+    }
+    break;
+  }
+
   case 'doctor': {
     // Deliberately does not need fleetd, or a token, or the network. It is the
     // thing you run when nothing else works.
@@ -575,6 +594,7 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet media                 what is playing on the laptop
   fleet play|pause|next|prev  drive it
   fleet doctor                can this machine run Fleet? (needs no daemon)
+  fleet reach                 how to open it from your phone
   fleet log <ref>             what happened, and what you did about it
   fleet note <ref> [text…]    your own context on a session
   fleet tags                  every group, and how many are in it

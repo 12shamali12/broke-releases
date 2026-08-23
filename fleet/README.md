@@ -9,10 +9,11 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 375 tests, no network, no CLI, no credentials
+npm test                        # 386 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs doctor       # can this machine run Fleet? no daemon needed
+node bin/fleet.mjs reach        # how to open it from your phone
 node bin/spike.mjs              # which read path works here (reads only)
 ```
 
@@ -29,8 +30,27 @@ The tunnel that reaches the API reaches both.
 
 ## The API
 
-Loopback only. `/v1/health` and `/v1/pair` are open; everything else needs a
-device token.
+Loopback only, deliberately — this API can message every session you have, so
+the default must never be that anything on the café Wi-Fi can try.
+
+Which means the phone app cannot reach it, and that is the first thing everyone
+hits. `fleetd` says so at startup rather than leaving you to discover it, and
+`fleet reach` answers it without restarting anything. Two ways in:
+
+- **Same Wi-Fi**: `--host 0.0.0.0`, then the LAN address it prints. Anything on
+  your network can then reach the API; pairing still gates it, but the door
+  becomes visible. `fleetd` warns on every start while bound that way.
+- **Anywhere**: a tunnel (Cloudflare Tunnel, Tailscale) in front of loopback.
+  The bind stays private and the tunnel adds its own authentication. The only
+  option that works off your network, and the only one to use on Wi-Fi you do
+  not trust.
+
+Fleet never offers an address that will not work: loopback, IPv6, link-local
+and Docker or VM bridges are all filtered out, because offering `172.17.0.1` as
+"try this from your phone" is worse than offering nothing — it looks like an
+answer.
+
+`/v1/health` and `/v1/pair` are open; everything else needs a device token.
 
 ```
 GET    /v1/health                    liveness; detail only when authenticated
@@ -240,6 +260,7 @@ src/poller.js           the loop that joins them
 src/adapters/           the only code that talks to Anthropic
 src/adapters/local.js   strategy D: `claude agents --json` + the CLI's transcripts
 src/doctor.js           can this machine run Fleet, and what to do if not
+src/reach.js            how to open it from a phone, and what each way costs
 src/http/auth.js        per-device tokens, stored hashed
 src/http/events.js      the event log and the SSE hub
 src/http/server.js      routing, validation, auth gate
