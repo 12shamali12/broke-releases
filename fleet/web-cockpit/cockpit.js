@@ -1101,7 +1101,7 @@ function transcript(s) {
  */
 function composerHint(s) {
   if (s.reachable) return `Message ${s.title}…`;
-  if (s.reachLabel === 'watch only') return 'Cannot be messaged — turn on Remote Control in this session first';
+  if (s.reachLabel === 'watch only') return 'Cannot be messaged — this session has no cloud id';
   if (s.reachLabel === 'archived') return 'This session is archived.';
   return 'Queued until this session reconnects…';
 }

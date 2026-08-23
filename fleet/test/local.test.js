@@ -149,7 +149,11 @@ test('a local session becomes the same raw shape the API returns', () => {
   // the CLI, which refuses with "Cloud sessions are interactive only".
   assert.equal(s.reachable, false);
   assert.match(s.reachableReason, /cloud session id/);
-  assert.match(s.reachableReason, /remote-control/i, 'and says how to fix it');
+  assert.match(s.reachableReason, /cloud session id/i, 'and says what is missing');
+  // Not an instruction to run /remote-control. That was asserted here for
+  // weeks and never verified: this machine's one session IS a Remote Control
+  // session and `claude agents --json` still reports a local UUID for it.
+  assert.doesNotMatch(s.reachableReason, /\/remote-control/, 'no advice that has not been checked');
 });
 
 test('a session that also exists on the cloud side IS reachable', () => {
@@ -635,7 +639,8 @@ test('a send refused for the wrong reason is explained for the right one', async
   );
   assert.match(explained, /not a cloud session id/);
   assert.match(explained, /flags are correct/);
-  assert.match(explained, /remote-control/i, 'and says what to do');
+  assert.match(explained, /cloud session id|local id|README/i, 'and says what is missing');
+  assert.doesNotMatch(explained, /\/remote-control/, 'without an instruction nobody has verified');
 
   // Everything else keeps the CLI's own wording, which is usually better.
   assert.equal(explainSendFailure('Session expired. Please run /login.', 'x'), 'Session expired. Please run /login.');

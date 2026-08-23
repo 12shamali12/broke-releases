@@ -645,7 +645,7 @@ switch (command) {
     } else {
       if (s.cwd) console.log(`cd ${s.cwd} && claude --resume ${s.id}`);
       else console.log(`claude --resume ${s.id}`);
-      console.log(`${C.dim}local session — it has no page on claude.ai. Run /remote-control inside it to give it one.${C.off}`);
+      console.log(`${C.dim}local session — it has no page on claude.ai, because it has no cloud session id.${C.off}`);
     }
     break;
   }

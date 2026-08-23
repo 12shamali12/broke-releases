@@ -311,3 +311,30 @@ test('the models the cockpit offers have the context window it claims', async ()
     assert.equal(real, claimed, `${id}: the menu says ${claimed}, contextWindowFor says ${real}`);
   }
 });
+
+test('nothing tells anyone to run a command that has never been verified', async () => {
+  // Fleet asserted, in nine places, that running `/remote-control` inside a
+  // session gives it a cloud id and makes it drivable. That was written
+  // without checking. `claude agents --json` reports a local UUID for every
+  // session on this machine — including the one this was checked on, which IS
+  // a Remote Control session and therefore definitely has a cloud id the
+  // registry does not carry. `--remote-control` is a flag you start a session
+  // with, per `claude --help`, not a slash command.
+  //
+  // The README says what is known and what is not. Nothing else hands out the
+  // instruction.
+  const files = ['src/model.js', 'src/adapters/cli.js', 'src/adapters/local.js',
+                 'bin/fleet.mjs', 'bin/fleetd.mjs', 'bin/spike.mjs',
+                 'web/app.js', 'web-cockpit/cockpit.js'];
+  for (const file of files) {
+    const src = await readFile(join(ROOT, file), 'utf8');
+    // Comments may discuss it; user-facing strings may not instruct it.
+    const strings = [...src.matchAll(/'([^'\\]{20,})'|`([^`\\]{20,})`/g)].map((m) => m[1] ?? m[2]);
+    for (const text of strings) {
+      assert.ok(
+        !/\/remote-control/.test(text),
+        `${file} tells someone to run /remote-control: ${text.slice(0, 70)}`,
+      );
+    }
+  }
+});

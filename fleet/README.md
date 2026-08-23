@@ -30,7 +30,7 @@ comes from the terminal you are sitting at, and every one after it from
 something you have already decided to trust.
 
 ```
-npm test                        # 542 tests, no network, no CLI, no credentials
+npm test                        # 543 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs reach        # how to open it from your phone
@@ -186,9 +186,10 @@ from a credential and nothing is sent anywhere.
 
 The limit is the honest one: a session Fleet can read is not necessarily a
 session Fleet can write to. The documented write path takes a cloud session id,
-which a purely local session does not have — so those show as **watch only**
-everywhere, a message to one is refused rather than queued, and `/remote-control`
-inside the session is what changes that.
+and `claude agents --json` reports a local one for every session on this
+machine — so those show as **watch only** everywhere, and a message to one is
+refused rather than queued. What would give a local session a cloud id is not
+settled; see [Remote Control](#remote-control-what-is-known-and-what-is-not).
 
 Two commands, in order. Neither needs the daemon.
 
@@ -299,9 +300,41 @@ bug.
 
 So a purely local session shows as **watch only**: on the board, with its
 status, its question and its history, and with every control dimmed and the
-reason attached. Running `/remote-control` inside a session gives it a cloud id
-and Fleet can drive it — which is also why Remote Control sessions were the
-design's `bridge` case all along.
+reason attached.
+
+### Remote Control: what is known, and what is not
+
+Fleet said, in nine places, that running `/remote-control` inside a session
+gives it a cloud id and makes it drivable. I wrote that without checking it,
+and then checked it.
+
+What is established:
+
+- `claude -p … --cloud <id>` takes a **cloud** session id. It refuses anything
+  else, with a message about flags that sends you to the wrong bug entirely.
+- `claude agents --json` reports a **local UUID** for every session on this
+  machine — `5aa3a0a7-9998-…`, never `session_01…`.
+- Nothing on disk maps one to the other. `~/.claude/sessions/*.json` is the
+  registry `agents --json` reads, and its `sessionId` is the local one; a
+  structural search of every transcript finds no cloud id in any field.
+- The session I checked this on **is itself a Remote Control session**. It has
+  a cloud id — the platform knows it — and the local registry still reports a
+  UUID. The cloud id lives with the service, not with the CLI.
+- `--remote-control [name]` is a flag you *start* a session with, per
+  `claude --help`. It is not documented as a slash command, which is how Fleet
+  was telling people to use it.
+
+What is not established: whether a session started with `claude
+--remote-control` reports something different, and therefore whether any local
+session can ever be driven from here. One data point is not nothing — it is a
+session that definitely has a cloud id, whose registry entry does not carry it
+— but it is one, and it was gathered on a cloud-hosted session rather than a
+laptop.
+
+Until that is settled with a real laptop session, Fleet says what is missing (a
+cloud session id) and does not hand out an instruction nobody has verified. The
+refusal is unchanged and correct either way: a write to a session with no cloud
+id is refused rather than queued.
 
 `bin/spike.mjs` reports this as the number that decides what Fleet is on your
 machine — *"6 sessions · 5 running, 1 from transcripts · 1 can be messaged"* —

@@ -552,7 +552,7 @@ function deviceLabel() {
  */
 function composerHint(s) {
   if (s.reachable) return 'Message this session…';
-  if (s.reachLabel === 'watch only') return 'Cannot be messaged — turn on Remote Control here first';
+  if (s.reachLabel === 'watch only') return 'Cannot be messaged — this session has no cloud id';
   if (s.reachLabel === 'archived') return 'This session is archived.';
   return 'Queued until this session reconnects…';
 }

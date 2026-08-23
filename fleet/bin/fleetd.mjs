@@ -92,8 +92,8 @@ function buildAdapter(config) {
       // The thing that surprises people, said before they hit it: seeing a
       // session and being able to message it are different capabilities.
       `  a local session can be WATCHED but not messaged — the documented write\n` +
-      `  path takes a cloud session id. Run /remote-control inside a session to\n` +
-      `  give it one, and Fleet can drive it.\n` +
+      `  path takes a cloud session id, and every session here reports a local\n` +
+      `  one. See "Remote Control" in the README.\n` +
       `  run \`node bin/spike.mjs\` to look for a fuller path.${C.off}`,
   );
   return new CompositeAdapter({ primary: new LocalAdapter(), writer: new CliAdapter() });

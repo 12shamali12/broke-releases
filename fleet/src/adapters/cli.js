@@ -123,6 +123,6 @@ export function explainSendFailure(message, sessionId) {
   return (
     `this session cannot be messaged: "${sessionId}" is not a cloud session id, and ` +
     'the only documented write path takes one. The flags are correct — the id is the problem. ' +
-    'Turn on Remote Control in that session (/remote-control) to give it a cloud id.'
+    'Fleet has only ever seen local ids from `claude agents --json` — see "Remote Control" in the README.'
   );
 }

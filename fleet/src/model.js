@@ -158,7 +158,7 @@ export function unreachableBecause({ envKind, connection, status, addressable = 
     // The one that is genuinely surprising: alive, on this machine, visible —
     // and still not writable, because the only documented write path takes a
     // cloud session id and this session does not have one.
-    return 'Fleet can see this session but cannot message it: the documented write path needs a cloud session id, and a purely local session does not have one. Turn on Remote Control in it (/remote-control) and Fleet can reach it.';
+    return 'Fleet can see this session but cannot message it: the documented write path takes a cloud session id, and `claude agents --json` reports a local one for every session on this machine. See "Remote Control" in the README — what makes a session drivable is not yet established.';
   }
   if (envKind === 'bridge' && connection !== 'connected') {
     return 'Only the machine hosting this session can revive it.';

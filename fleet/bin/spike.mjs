@@ -138,7 +138,7 @@ if (!cliProbe.ok) {
     fail(`"${args.sendTo}" is not a cloud session id`);
     note('The documented write path only addresses cloud sessions. A local session');
     note('id will be refused with a message about --print, which is misleading.');
-    note('Use an id from claude.ai/code, or run /remote-control in the session first.');
+    note('Use an id from claude.ai/code. No local session has ever reported one — see the README.');
     results.cli = { ok: true, detail: cliProbe.detail, sendProven: false, sendError: 'not a cloud session id' };
   } else {
     try {
@@ -228,7 +228,7 @@ if (localProbe.ok) {
     warn(`${addressable.length} of ${raw.length} can be MESSAGED; ${watchOnly.length} are watch-only`);
     note('The only documented write path takes a cloud session id. A purely local');
     note('session does not have one, so Fleet can show it but not drive it.');
-    note('Run /remote-control inside a session to give it one:');
+    note('No local session here reports one — see "Remote Control" in the README:');
     for (const r of watchOnly.slice(0, 5)) note(`  · ${r.title}`);
     if (watchOnly.length > 5) note(`  · and ${watchOnly.length - 5} more`);
   } else if (raw.length) {
@@ -288,8 +288,8 @@ if (canRead && canWrite) {
     if (watchOnly && !addressable) {
       warn('this machine — strategy D for reads, but NOTHING can be messaged yet');
       note('Fleet will show every session here and drive none of them, because');
-      note('none has a cloud session id. Run /remote-control inside the ones you');
-      note('want to control, and they become fully drivable.');
+      note('none has a cloud session id, and what gives one to a local session');
+      note('is not established — see "Remote Control" in the README.');
     } else {
       pass('this machine — strategy D for reads, B for writes');
       if (watchOnly) note(`${addressable} session(s) drivable, ${watchOnly} watch-only.`);
