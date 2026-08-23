@@ -158,6 +158,7 @@ export function readTranscript(lines) {
   let lastAssistant = null;
   let lastAssistantText = null;
   let lastUser = null;
+  let mode = null;
 
   for (const line of lines) {
     let entry;
@@ -171,6 +172,17 @@ export function readTranscript(lines) {
     // poll with it. A transcript is a file Fleet did not write; every line in
     // it is a guess until proven otherwise.
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+
+    // The CLI records every permission-mode change as its own entry —
+    // `{type: 'mode', mode: 'normal', sessionId}`, with no timestamp, so it is
+    // tracked by position rather than by time. It is the only source for this
+    // on a local session, and without it every one of them showed
+    // "Permission —" in the panel.
+    if (entry.type === 'mode') {
+      if (typeof entry.mode === 'string' && entry.mode) mode = entry.mode;
+      continue;
+    }
+
     if (entry.type !== 'assistant' && entry.type !== 'user') continue;
     last = entry;
     if (entry.type === 'assistant') {
@@ -202,6 +214,8 @@ export function readTranscript(lines) {
     model: (lastAssistant?.message ?? {}).model ?? null,
     /** Who spoke last. The single best signal for whether it is your turn. */
     lastSpeaker: last.type,
+    /** Whatever the last `mode` entry said, or nothing if it never said. */
+    mode,
     stopReason: message.stop_reason ?? null,
     /** Real numbers, from the CLI's own accounting. */
     tokens: tokensFrom(usage),
@@ -412,6 +426,7 @@ export function toRawRecord(agent, transcript, { remote = null, live = true, now
       // has no usage in it, so the meter says "not readable yet" rather than
       // drawing an empty bar that reads as "plenty of room".
       context_used_tokens: transcript?.tokens ?? null,
+      permission_mode: transcript?.mode ?? null,
       // The remote when there is one, so `repo:owner/name` means the same
       // thing on every machine. A local path would group nothing.
       sources: remote ? [{ git_repository: { url: remote } }] : [],

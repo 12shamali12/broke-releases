@@ -949,3 +949,38 @@ test('the reading follows a compaction down without being told about it', () => 
   ]);
   assert.equal(toRawRecord({ sessionId: 's-x' }, t).session_context.context_used_tokens, 17_264);
 });
+
+
+test('the permission mode comes from the CLI, not from a guess', () => {
+  // Recorded as its own entry type with no timestamp, so it is tracked by
+  // position rather than by time. It is the only source for this on a local
+  // session — without it every one of them showed "Permission —".
+  const t = readTranscript([
+    '{"type":"mode","mode":"normal","sessionId":"s1"}',
+    entry(),
+    '{"type":"mode","mode":"acceptEdits","sessionId":"s1"}',
+    entry({ message: { model: 'claude-opus-5', content: [{ type: 'text', text: 'Done.' }] } }),
+  ]);
+  assert.equal(t.mode, 'acceptEdits', 'the last one wins');
+  assert.equal(toRawRecord({ sessionId: 's1' }, t).session_context.permission_mode, 'acceptEdits');
+});
+
+test('a mode entry is not mistaken for something a session said', () => {
+  // It has no timestamp and no message; treating it as conversation would
+  // give the session a null `at` and an empty status line.
+  const t = readTranscript(['{"type":"mode","mode":"normal","sessionId":"s1"}', entry()]);
+  assert.equal(t.text, 'Done.');
+  assert.equal(t.lastSpeaker, 'assistant');
+  assert.ok(Number.isFinite(t.at));
+});
+
+test('a transcript that never states a mode reports none', () => {
+  assert.equal(readTranscript([entry()]).mode, null);
+  assert.equal(toRawRecord({ sessionId: 's1' }, readTranscript([entry()])).session_context.permission_mode, null);
+});
+
+test('a malformed mode entry is ignored rather than believed', () => {
+  for (const bad of ['{"type":"mode"}', '{"type":"mode","mode":null}', '{"type":"mode","mode":""}', '{"type":"mode","mode":42}']) {
+    assert.equal(readTranscript([bad, entry()]).mode, null, bad);
+  }
+});
