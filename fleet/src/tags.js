@@ -211,5 +211,17 @@ export function selectSessions(fleet, tags, { tag = null, lane = null, ids = nul
   const unreachable = sessions.filter((s) => !s.reachable);
   if (!includeUnreachable) sessions = sessions.filter((s) => s.reachable);
 
-  return { sessions, skippedUnreachable: unreachable.map((s) => ({ id: s.id, title: s.title })) };
+  // The label travels with the id, so no caller has to look the session back
+  // up to say why it was skipped — and so none of them has to guess. "Watch
+  // only" and "disconnected" are different situations: one will never receive
+  // this command, the other will when it wakes up, and a preview that calls
+  // both "unreachable" hides which of your sessions you have actually lost.
+  return {
+    sessions,
+    skippedUnreachable: unreachable.map((s) => ({
+      id: s.id,
+      title: s.title,
+      reason: s.reachLabel ?? 'unreachable',
+    })),
+  };
 }

@@ -470,7 +470,7 @@ switch (command) {
       // blast radius before acting is the whole reason bulk is usable.
       console.log(`\n${C.b}${preview.count} session${preview.count === 1 ? '' : 's'}${C.off}${C.dim} would be affected${C.off}`);
       for (const s2 of preview.sessions) console.log(`  ${C.dim}·${C.off} ${s2.title} ${C.dim}${s2.lane}${C.off}`);
-      for (const s2 of preview.skippedUnreachable) console.log(`  ${C.dim}· ${s2.title} — unreachable, skipped${C.off}`);
+      for (const s2 of preview.skippedUnreachable) console.log(`  ${C.dim}· ${s2.title} — ${s2.reason ?? 'unreachable'}, skipped${C.off}`);
       console.log(`\n${C.dim}add a verb to act: fleet all --lane blocked send "continue"${C.off}\n`);
       break;
     }
@@ -487,7 +487,8 @@ switch (command) {
     });
     console.log(`${C.dim}${verb} → ${C.off}${C.ok}${r.queued} queued${C.off}` +
       `${r.failed ? ` ${C.ac}${r.failed} failed${C.off}` : ''}` +
-      `${r.skippedUnreachable.length ? `${C.dim} · ${r.skippedUnreachable.length} unreachable, skipped${C.off}` : ''}`);
+      `${r.skippedUnreachable.length ? `${C.dim} · ${r.skippedUnreachable.length} skipped (${
+        [...new Set(r.skippedUnreachable.map((s2) => s2.reason ?? 'unreachable'))].join(', ')})${C.off}` : ''}`);
     for (const one of r.results.filter((x) => !x.ok)) {
       console.log(`  ${C.ac}✗${C.off} ${one.title}: ${one.error}`);
     }

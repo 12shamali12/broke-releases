@@ -158,11 +158,11 @@ test('unreachable sessions are excluded and named, never silently included', () 
 
   const out = selectSessions(f, store, {});
   assert.deepEqual(out.sessions.map((s) => s.id), ['a']);
-  assert.deepEqual(out.skippedUnreachable, [{ id: 'b', title: 'Asleep' }]);
+  assert.deepEqual(out.skippedUnreachable, [{ id: 'b', title: 'Asleep', reason: 'unreachable' }]);
 
   const forced = selectSessions(f, store, { includeUnreachable: true });
   assert.equal(forced.sessions.length, 2);
-  assert.deepEqual(forced.skippedUnreachable, [{ id: 'b', title: 'Asleep' }], 'still reported, even when included');
+  assert.deepEqual(forced.skippedUnreachable, [{ id: 'b', title: 'Asleep', reason: 'unreachable' }], 'still reported, even when included');
 });
 
 test('archived sessions are never selected', () => {
@@ -215,4 +215,29 @@ test('a session with no platform tags is unaffected', () => {
   const store = new TagStore({});
   assert.ok(!store.tagsFor(session({ tags: undefined })).includes('unknown'));
   assert.ok(!store.tagsFor(session({ tags: ['   '] })).includes('unknown'), 'a blank tag is not a group');
+});
+
+test('a skipped session says which kind of unreachable it is', () => {
+  // "Watch only" and "disconnected" call for opposite responses: one will
+  // never receive this command, the other will when it wakes up. A preview
+  // that calls both "unreachable, skipped" hides which of your sessions you
+  // have actually lost from the group action you just previewed.
+  const store = new TagStore({});
+  const f = fleet([
+    session({ id: 'a' }),
+    session({ id: 'b', title: 'On this laptop', reachable: false, reachLabel: 'watch only' }),
+    session({ id: 'c', title: 'Asleep', reachable: false, reachLabel: 'disconnected' }),
+  ]);
+
+  const { skippedUnreachable } = selectSessions(f, store, {});
+  assert.deepEqual(skippedUnreachable, [
+    { id: 'b', title: 'On this laptop', reason: 'watch only' },
+    { id: 'c', title: 'Asleep', reason: 'disconnected' },
+  ]);
+});
+
+test('a session with no label still reports something usable', () => {
+  const store = new TagStore({});
+  const f = fleet([session({ id: 'b', reachable: false, reachLabel: undefined })]);
+  assert.equal(selectSessions(f, store, {}).skippedUnreachable[0].reason, 'unreachable');
 });

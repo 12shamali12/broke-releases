@@ -1428,7 +1428,7 @@ function bulkOverlay() {
           h('div', { style: 'display:flex;gap:9px;align-items:center;padding:6px 11px;opacity:.5;border-bottom:1px solid var(--bd)' },
             h('span', { class: 'dot ft', 'aria-hidden': 'true' }),
             h('span', { style: 'flex-grow:1;min-width:0;font-size:12.5px' }, s.title),
-            h('span', { style: 'font-size:10px;color:var(--ft)' }, 'unreachable — skipped')))),
+            h('span', { style: 'font-size:10px;color:var(--ft)' }, `${s.reachLabel ?? 'unreachable'} — skipped`)))),
 
       h('div', { class: 'field' }, text),
       h('div', { style: 'display:flex;gap:9px;margin-top:13px' },
