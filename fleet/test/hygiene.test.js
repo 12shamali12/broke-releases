@@ -106,3 +106,24 @@ test('every session status used anywhere is one the model actually maps', async 
     }
   }
 });
+
+test('the README does not undercount the test suite', async () => {
+  // A number in a README drifts silently and downward: it was 393 while the
+  // suite was 440. Literal `test(` call sites are a lower bound — the loops
+  // over CLIENTS multiply several of them — so this catches the drift that
+  // actually happens without pretending to an exactness it cannot have.
+  const readme = await readFile(join(ROOT, 'README.md'), 'utf8');
+  const claimed = Number(/npm test\s+#\s*(\d[\d,]*)\s+tests/.exec(readme)?.[1]?.replace(/,/g, ''));
+  assert.ok(Number.isFinite(claimed), 'the README states a test count');
+
+  const files = (await readdir(join(ROOT, 'test'))).filter((f) => f.endsWith('.test.js'));
+  let literal = 0;
+  for (const file of files) {
+    const src = await readFile(join(ROOT, 'test', file), 'utf8');
+    literal += (src.match(/^\s*test\(/gm) ?? []).length;
+  }
+  assert.ok(
+    claimed >= literal,
+    `the README claims ${claimed} tests; there are at least ${literal} written down`,
+  );
+});

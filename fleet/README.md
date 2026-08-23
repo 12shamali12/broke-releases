@@ -8,13 +8,33 @@ detects the transitions worth telling you about, delivers commands without
 losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
+## Start here
+
+Four commands, on the machine that runs your sessions:
+
 ```
-npm test                        # 393 tests, no network, no CLI, no credentials
+node bin/fleet.mjs doctor       # can this machine run Fleet, and can it see anything?
+node bin/fleetd.mjs             # start it — prints a pairing code
+node bin/fleet.mjs pair 123456  # redeem that code, from another terminal
+node bin/fleet.mjs              # the board
+```
+
+`doctor` needs no daemon and answers the question that decides whether any of
+this is worth doing: how many sessions this machine can actually see. Every
+other check can pass on a laptop where Fleet shows nothing, and an empty board
+under a column of green ticks is the worst diagnostic there is.
+
+For the phone, `fleet pair` with no code prints a fresh one and the LAN address
+to open it at. Only an already-paired device can invite another: the first code
+comes from the terminal you are sitting at, and every one after it from
+something you have already decided to trust.
+
+```
+npm test                        # 441 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
-node bin/fleet.mjs doctor       # can this machine run Fleet? no daemon needed
 node bin/fleet.mjs reach        # how to open it from your phone
-node bin/spike.mjs              # which read path works here (reads only)
+node bin/spike.mjs              # look for a read path beyond this machine
 ```
 
 With the daemon running there are two clients, both served off disk by fleetd
@@ -144,11 +164,22 @@ default, which would hold every event until the response closed.
 
 ## How Fleet reads your sessions
 
+Strategy D, on this machine: `claude agents --json` for what is running, and
+the CLI's own transcripts under `~/.claude/projects/` for what each session
+last said. Both are things the CLI already writes down. Nothing is inferred
+from a credential and nothing is sent anywhere.
+
+The limit is the honest one: a session Fleet can read is not necessarily a
+session Fleet can write to. The documented write path takes a cloud session id,
+which a purely local session does not have — so those show as **watch only**
+everywhere, a message to one is refused rather than queued, and `/remote-control`
+inside the session is what changes that.
+
 Two commands, in order. Neither needs the daemon.
 
 ```
 node bin/fleet.mjs doctor   # is this machine in a state where anything could work?
-node bin/spike.mjs          # which read path actually works here — reads only
+node bin/spike.mjs          # look for a read path beyond this machine — reads only
 ```
 
 `doctor` costs nothing and answers the cheaper question first, because "you are
@@ -586,3 +617,6 @@ first is a design change; the second is real work. Undecided — see
 - [x] 12 Notes, and a flake that was two real shutdown bugs
 - [x] 13 History and undo — what happened, and taking it back
 - [x] 14 A read path that works — `doctor`, and strategy D
+- [x] 15 Both clients driven in a real browser — the live stream had never
+      worked in one, three cockpit controls had no keyboard path, every icon
+      rendered at its intrinsic size, and you could pair exactly one device
