@@ -119,3 +119,37 @@ test('a newly seen session is feed-level, since it may predate fleetd', () => {
 test('an unchanged fleet produces no events', () => {
   assert.deepEqual(diffFleet(fleetB, normalizeFleet(SNAPSHOT_B, NOW)), []);
 });
+
+
+test('a session that arrives already needing you does not arrive silently', () => {
+  // The cold-start bug in miniature. `session.blocked` fires on the transition
+  // into blocked, and a session new to Fleet never made one where Fleet could
+  // see it — so it would sit on the board and never alert. Real ways this
+  // happens: a session outside FLEET_PROJECTS_DIR until the path was
+  // corrected, one that fell past the read cap and came back, one whose
+  // transcript only just re-entered the recent window.
+  const waiting = {
+    ...fleetA.sessions[0],
+    id: 'brand-new',
+    actionable: true,
+    staleFor: 7_200_000,
+    summary: { needsAction: 'which branch?', detail: 'which branch?' },
+  };
+  const next = { ...fleetA, sessions: [...fleetA.sessions, waiting] };
+  const events = diffFleet(fleetA, next).filter((e) => e.sessionId === 'brand-new');
+
+  assert.deepEqual(events.map((e) => e.type), ['session.appeared', 'session.blocked']);
+  assert.equal(events[0].severity, SEVERITY.FEED, 'appearing is not news');
+  assert.equal(events[1].severity, SEVERITY.PUSH, 'needing you is');
+  assert.equal(events[1].sinceStart, true);
+  assert.equal(events[1].at, next.generatedAt - waiting.staleFor, 'dated from when the wait began');
+});
+
+test('a session that arrives working is only an appearance', () => {
+  const busy = { ...fleetA.sessions[0], id: 'brand-new', actionable: false };
+  const next = { ...fleetA, sessions: [...fleetA.sessions, busy] };
+  assert.deepEqual(
+    diffFleet(fleetA, next).filter((e) => e.sessionId === 'brand-new').map((e) => e.type),
+    ['session.appeared'],
+  );
+});

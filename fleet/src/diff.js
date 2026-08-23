@@ -83,8 +83,30 @@ export function diffFleet(previous, next, { stallAfterMs = STALL_AFTER_MS } = {}
 
     if (!old) {
       // New to us. Not necessarily new in the world — it may have existed
-      // before fleetd started — so this is feed-level, never a push.
+      // before fleetd could see it — so appearing is feed-level, never a push.
       events.push(event('session.appeared', SEVERITY.FEED, session, { at: now, lane: session.lane }));
+
+      // But if it arrives already needing an answer, staying quiet about it is
+      // the cold-start bug again in miniature: `session.blocked` fires on the
+      // transition into blocked, and this session never made one where Fleet
+      // could see it. It would sit on the board and never alert, exactly like
+      // the five that a restart used to silence.
+      //
+      // This is not hypothetical. A session outside `FLEET_PROJECTS_DIR` until
+      // the path was corrected, one that fell past the read cap and came back,
+      // or one whose transcript only just re-entered the recent window all
+      // arrive this way — already waiting, and new to us.
+      if (session.actionable) {
+        events.push(
+          event('session.blocked', SEVERITY.PUSH, session, {
+            at: session.staleFor != null ? now - session.staleFor : now,
+            needsAction: session.summary.needsAction,
+            detail: session.summary.detail,
+            staleFor: session.staleFor ?? null,
+            sinceStart: true,
+          }),
+        );
+      }
       continue;
     }
 
