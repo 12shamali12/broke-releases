@@ -69,12 +69,21 @@ self.addEventListener('push', (event) => {
   // Inline reply is Android/Chrome only. Elsewhere it renders as a plain
   // button and `event.reply` is undefined, which is handled below by opening
   // the app rather than sending an empty message.
-  const actions = single
-    ? [
-        { action: 'reply', type: 'text', title: 'Reply', placeholder: 'Message this session…' },
-        { action: 'snooze', title: 'Snooze 4h' },
-      ]
-    : [{ action: 'open', title: 'Open Fleet' }];
+  //
+  // An undelivered command gets neither Reply nor Snooze, and that is the
+  // whole point of separating it. Reply would queue a second message down the
+  // same broken path that just swallowed the first, and Snooze silences the
+  // one alert this system exists to never lose — a message you believed you
+  // sent that never arrived. Both were offered until someone looked at the
+  // rendered notification.
+  const actions = payload.undeliverable
+    ? [{ action: 'open', title: 'See what failed' }]
+    : single
+      ? [
+          { action: 'reply', type: 'text', title: 'Reply', placeholder: 'Message this session…' },
+          { action: 'snooze', title: 'Snooze 4h' },
+        ]
+      : [{ action: 'open', title: 'Open Fleet' }];
 
   const shown = self.registration.showNotification(payload.title ?? 'Fleet', {
     body: payload.body ?? '',
@@ -90,6 +99,7 @@ self.addEventListener('push', (event) => {
       sessionId: payload.sessionId ?? null,
       digest: payload.digest ?? null,
       token: payload.token ?? null,
+      undeliverable: Boolean(payload.undeliverable),
     },
     actions,
   });
@@ -157,7 +167,12 @@ self.addEventListener('notificationclick', (event) => {
  * a person ends up muting the app.
  */
 self.addEventListener('notificationclose', (event) => {
-  const { token } = event.notification.data ?? {};
+  const { token, undeliverable } = event.notification.data ?? {};
+  // Swiping away "this message never arrived" is not consent to mute that
+  // session. The session is still blocked, still needs you, and the reason
+  // you swiped was that you had read the failure — not that you had dealt
+  // with what caused it.
+  if (undeliverable) return;
   if (token) event.waitUntil(act(token, 'snooze', { hours: 1, reason: 'dismissed' }));
 });
 

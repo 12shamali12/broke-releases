@@ -489,3 +489,31 @@ test('a command with nothing quotable still says what failed', async () => {
   });
   assert.match(body, /compact/);
 });
+
+// ------------------------------------------------- what a notification offers
+
+/**
+ * Which buttons appear is a policy decision, not a rendering detail.
+ *
+ * These live here rather than in the service worker because sw.js has no test
+ * harness — it was exercised for the first time by dispatching a real push
+ * event into a real service worker in Chromium, which is how the bug below
+ * was found. Encoding the rule here at least means the intent has a home.
+ */
+test('an undelivered message is never offered a snooze', () => {
+  // Snoozing it silences the one alert this system exists to never lose: a
+  // message you believed you sent that never arrived. And Reply would queue a
+  // second message down the same broken path that swallowed the first. Both
+  // were offered until the notification was actually rendered and looked at.
+  const n = compose({
+    type: 'command.failed', title: 'Deploy runner', verb: 'send', attempts: 5,
+    excerpt: 'use staging', error: 'Session expired.',
+  });
+  assert.equal(n.undeliverable, true, 'the flag the service worker branches on');
+  assert.equal(n.urgent, true);
+});
+
+test('a blocked session is offered both, because both make sense there', () => {
+  const n = compose({ type: 'session.blocked', title: 'Importer', sessionId: 's1', needsAction: 'which endpoint?' });
+  assert.ok(!n.undeliverable, 'reply and snooze are exactly right for this one');
+});
