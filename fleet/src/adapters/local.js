@@ -45,18 +45,31 @@ const TAIL_BYTES = 128 * 1024;
 const LIST_TIMEOUT_MS = 20_000;
 
 /**
- * How far back a transcript is still worth showing, and how many to read.
+ * How far back a transcript is still worth showing.
  *
  * `claude agents --json` only lists RUNNING processes. A session you closed the
  * terminal on is invisible to it — and that is exactly the session this product
  * exists to surface, the one that sat for eleven days. The transcripts remember
- * it, so they are scanned too.
- *
- * Bounded twice, because a laptop accumulates hundreds: by age and by count.
- * Both are applied from `mtime` alone, before any file is opened.
+ * it, so they are scanned too. Age is applied from `mtime` alone, before any
+ * file is opened.
  */
 const RECENT_MS = 14 * 24 * 60 * 60 * 1000;
-const MAX_TRANSCRIPTS = 40;
+
+/**
+ * A sanity limit, not a working one — and it is reported when reached.
+ *
+ * The first version of this capped at 40 and sorted newest-first, which was
+ * exactly backwards. Measured on a laptop with 300 transcripts, 76 were inside
+ * the window and 36 were silently dropped — and because the sort put newest
+ * first, the ones dropped were the OLDEST, up to 13.9 days idle. That is
+ * precisely the session this product exists to catch. A cap meant to bound
+ * read cost had made the tool blind to its own use case.
+ *
+ * Reading is cheap and cached by mtime, so the cap now sits far above any real
+ * laptop, and `truncated` says so on the rare occasion it bites rather than
+ * quietly shortening the board.
+ */
+const MAX_TRANSCRIPTS = 250;
 
 /**
  * Can the documented write path name this session?
@@ -424,6 +437,8 @@ export class LocalAdapter {
 
   name = 'local';
   capabilities = { read: true, write: false, scope: 'local' };
+  /** Sessions inside the window that were not read, because there were too many. */
+  truncated = 0;
 
   /** What `claude agents --json` reports, unchanged. */
   async agents({ all = true } = {}) {
@@ -497,7 +512,11 @@ export class LocalAdapter {
       }
     }
 
-    return [...found.values()].sort((a, b) => b.mtime - a.mtime).slice(0, MAX_TRANSCRIPTS);
+    const all = [...found.values()].sort((a, b) => b.mtime - a.mtime);
+    // Kept as a property rather than a silent slice: if this ever bites, the
+    // board is shorter than the truth and somebody has to be able to know.
+    this.truncated = Math.max(0, all.length - MAX_TRANSCRIPTS);
+    return all.slice(0, MAX_TRANSCRIPTS);
   }
 
   async list({ now = Date.now() } = {}) {
@@ -604,6 +623,7 @@ export class LocalAdapter {
       const parts = [`${records.length} session(s)`];
       if (recovered) parts.push(`${running} running, ${recovered} from transcripts`);
       parts.push(`${addressable} can be messaged`);
+      if (this.truncated) parts.push(`${this.truncated} NOT shown — more than ${MAX_TRANSCRIPTS} in the window`);
       return { ok: true, detail: parts.join(' · ') };
     } catch (err) {
       if (err?.code === 'ENOENT') return { ok: false, detail: 'claude CLI not on PATH' };

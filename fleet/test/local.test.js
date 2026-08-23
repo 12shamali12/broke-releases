@@ -9,7 +9,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -666,6 +666,90 @@ test('the probe counts running and recovered separately, and says what is drivab
     assert.match(detail, /3 session\(s\)/);
     assert.match(detail, /1 running, 2 from transcripts/);
     assert.match(detail, /1 can be messaged/, 'only the cloud-shaped id is drivable');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------- no silent caps
+
+test('a session inside the window is never silently dropped', async () => {
+  // The first version capped at 40 and sorted newest-first, which was exactly
+  // backwards: measured on 300 transcripts, 76 were in the window, 36 were
+  // dropped, and the dropped ones were the OLDEST — up to 13.9 days idle. That
+  // is precisely the session this product exists to catch. A cap meant to
+  // bound read cost had made the tool blind to its own use case.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-x'), { recursive: true });
+
+    const now = Date.now();
+    for (let i = 0; i < 60; i += 1) {
+      const file = join(projects, '-home-dev-x', `s${String(i).padStart(3, '0')}.jsonl`);
+      await writeFile(file, `${entry()}\n`);
+      // Spread across the window: i=0 is newest, i=59 is nearly 13 days idle.
+      const age = i * 5 * 3600 * 1000;
+      await utimes(file, new Date(now - age), new Date(now - age));
+    }
+
+    const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: projects });
+    const records = await adapter.list();
+
+    assert.equal(records.length, 60, 'every session in the window is on the board');
+    assert.equal(adapter.truncated, 0);
+
+    // And specifically the least-recently-touched one, which the old cap ate
+    // first. Checked by id: `updated_at` comes from the transcript's own
+    // timestamp — when the session actually last spoke — not from the file's
+    // mtime, which is only used to decide the window and the read cache.
+    assert.ok(records.some((r) => r.id === 's059'), 'the most neglected session survived');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('if the sanity cap ever bites, it says so rather than shortening the board quietly', async () => {
+  // A board that is shorter than the truth, with nothing saying why, is worse
+  // than a slow one.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-x'), { recursive: true });
+    for (let i = 0; i < 260; i += 1) {
+      await writeFile(join(projects, '-home-dev-x', `s${String(i).padStart(3, '0')}.jsonl`), `${entry()}\n`);
+    }
+
+    const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: projects });
+    await adapter.list();
+    assert.ok(adapter.truncated > 0, 'the overflow is counted');
+
+    const { detail } = await adapter.probe();
+    assert.match(detail, /NOT shown/, 'and stated where someone will read it');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a running session is shown however old its transcript is', async () => {
+  // A process alive for weeks with an untouched transcript is a session
+  // sitting at a prompt nobody answered. The window must not hide it.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-x'), { recursive: true });
+    const file = join(projects, '-home-dev-x', 'ancient.jsonl');
+    await writeFile(file, `${entry()}\n`);
+    const old = new Date(Date.now() - 40 * 24 * 3600 * 1000);
+    await utimes(file, old, old);
+
+    const adapter = new LocalAdapter({
+      exec: fakeExec([{ sessionId: 'ancient', cwd: '/home/dev/x', name: 'Long forgotten', pid: 1 }]),
+      projectsDir: projects,
+    });
+    const records = await adapter.list();
+    assert.equal(records.length, 1);
+    assert.equal(records[0].title, 'Long forgotten');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
