@@ -132,6 +132,14 @@ if (!cliProbe.ok) {
   if (!args.sendTo) {
     note('send not attempted (pass --send-to <session-id> to prove delivery end to end)');
     results.cli = { ok: true, detail: cliProbe.detail, sendProven: false };
+  } else if (!cli.canAddress(args.sendTo)) {
+    // Refused here rather than after the CLI answers, because the CLI's own
+    // refusal names the flags and not the real problem.
+    fail(`"${args.sendTo}" is not a cloud session id`);
+    note('The documented write path only addresses cloud sessions. A local session');
+    note('id will be refused with a message about --print, which is misleading.');
+    note('Use an id from claude.ai/code, or run /remote-control in the session first.');
+    results.cli = { ok: true, detail: cliProbe.detail, sendProven: false, sendError: 'not a cloud session id' };
   } else {
     try {
       const sent = await cli.send(args.sendTo, 'Fleet spike — ignore this message.');
@@ -208,7 +216,32 @@ if (localProbe.ok) {
   note('`claude agents --json` plus the transcripts the CLI writes itself.');
   note('No network, no tokens, nothing unofficial — but it only sees sessions');
   note('running on THIS machine. A cloud session started from a phone is invisible.');
-  results.local = { ok: true, detail: localProbe.detail };
+
+  // The number that decides whether Fleet is a control plane or a dashboard.
+  // Reading a session and being able to message it are separate capabilities,
+  // and only one of them is visible without asking.
+  const raw = await local.list();
+  const addressable = raw.filter((r) => r.addressable !== false);
+  const watchOnly = raw.filter((r) => r.addressable === false);
+
+  if (watchOnly.length) {
+    warn(`${addressable.length} of ${raw.length} can be MESSAGED; ${watchOnly.length} are watch-only`);
+    note('The only documented write path takes a cloud session id. A purely local');
+    note('session does not have one, so Fleet can show it but not drive it.');
+    note('Run /remote-control inside a session to give it one:');
+    for (const r of watchOnly.slice(0, 5)) note(`  · ${r.title}`);
+    if (watchOnly.length > 5) note(`  · and ${watchOnly.length - 5} more`);
+  } else if (raw.length) {
+    pass('every session found can be messaged');
+  }
+
+  results.local = {
+    ok: true,
+    detail: localProbe.detail,
+    sessions: raw.length,
+    addressable: addressable.length,
+    watchOnly: watchOnly.length,
+  };
 } else {
   fail(localProbe.detail);
   results.local = { ok: false, detail: localProbe.detail };
@@ -251,10 +284,18 @@ if (canRead && canWrite) {
     pass('full fleet — strategy A for reads, B for writes');
     note('every session on the account, including cloud ones.');
   } else if (results.local?.ok) {
-    pass('this machine — strategy D for reads, B for writes');
-    note('free, fast, and entirely documented. The limit is real and worth');
-    note('stating: sessions running elsewhere, including cloud sessions you');
-    note('started from a phone, will not appear on the board.');
+    const { addressable = 0, watchOnly = 0 } = results.local;
+    if (watchOnly && !addressable) {
+      warn('this machine — strategy D for reads, but NOTHING can be messaged yet');
+      note('Fleet will show every session here and drive none of them, because');
+      note('none has a cloud session id. Run /remote-control inside the ones you');
+      note('want to control, and they become fully drivable.');
+    } else {
+      pass('this machine — strategy D for reads, B for writes');
+      if (watchOnly) note(`${addressable} session(s) drivable, ${watchOnly} watch-only.`);
+    }
+    note('Sessions running elsewhere, including cloud sessions started from a');
+    note('phone, will not appear on the board at all.');
     if (results.agent?.ok) note('strategy C also works here, and can fill in the rest more slowly.');
   } else {
     pass('workable — strategy C for reads, B for writes');

@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 389 tests, no network, no CLI, no credentials
+npm test                        # 390 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs doctor       # can this machine run Fleet? no daemon needed
@@ -254,6 +254,11 @@ status, its question and its history, and with every control dimmed and the
 reason attached. Running `/remote-control` inside a session gives it a cloud id
 and Fleet can drive it — which is also why Remote Control sessions were the
 design's `bridge` case all along.
+
+`bin/spike.mjs` reports this as the number that decides what Fleet is on your
+machine — *"6 sessions · 5 running, 1 from transcripts · 1 can be messaged"* —
+and refuses `--send-to` for a non-cloud id before spending a call on it, since
+the CLI's own refusal names the flags rather than the real problem.
 
 A write to such a session is **refused, not queued**. Held and impossible are
 different: a disconnected session may wake up, so its command waits; one that

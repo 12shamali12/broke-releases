@@ -642,3 +642,31 @@ test('a send refused for the wrong reason is explained for the right one', async
   assert.equal(explainSendFailure('', 'x'), '');
   assert.equal(explainSendFailure(null, 'x'), null);
 });
+
+test('the probe counts running and recovered separately, and says what is drivable', async () => {
+  // The old wording read "4 sessions, 5 with transcript detail", which is
+  // nonsense the moment a transcript outlives its process — the common case.
+  // And it said nothing about the number that decides whether Fleet is a
+  // control plane here: how many can actually be messaged.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-a'), { recursive: true });
+    await writeFile(join(projects, '-home-dev-a', 'running.jsonl'), `${entry()}\n`);
+    await writeFile(join(projects, '-home-dev-a', 'dead.jsonl'), `${entry()}\n`);
+    await writeFile(join(projects, '-home-dev-a', 'session_01CLOUD.jsonl'), `${entry()}\n`);
+
+    const adapter = new LocalAdapter({
+      exec: fakeExec([{ sessionId: 'running', cwd: '/home/dev/a', name: 'r', pid: 1 }]),
+      projectsDir: projects,
+    });
+
+    const { ok, detail } = await adapter.probe();
+    assert.equal(ok, true);
+    assert.match(detail, /3 session\(s\)/);
+    assert.match(detail, /1 running, 2 from transcripts/);
+    assert.match(detail, /1 can be messaged/, 'only the cloud-shaped id is drivable');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

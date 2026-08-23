@@ -593,12 +593,18 @@ export class LocalAdapter {
   async probe() {
     try {
       const agents = await this.agents();
-      const enriched = await this.list();
-      const withTranscript = enriched.filter((r) => r.updated_at).length;
-      return {
-        ok: true,
-        detail: `${agents.length} local session(s), ${withTranscript} with transcript detail`,
-      };
+      const records = await this.list();
+      // Counted as running-plus-recovered rather than "N sessions, M with
+      // detail", which read as nonsense the moment M exceeded N — as it does
+      // whenever a transcript outlives its process, which is the common case.
+      const running = agents.filter((a) => a?.sessionId).length;
+      const recovered = Math.max(0, records.length - running);
+      const addressable = records.filter((r) => r.addressable !== false).length;
+
+      const parts = [`${records.length} session(s)`];
+      if (recovered) parts.push(`${running} running, ${recovered} from transcripts`);
+      parts.push(`${addressable} can be messaged`);
+      return { ok: true, detail: parts.join(' · ') };
     } catch (err) {
       if (err?.code === 'ENOENT') return { ok: false, detail: 'claude CLI not on PATH' };
       return { ok: false, detail: err.message };
