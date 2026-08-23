@@ -367,6 +367,16 @@ export class LocalAdapter {
   #projectsDir;
   /** cwd -> remote URL. A repository does not change its origin mid-poll. */
   #remotes = new Map();
+  /**
+   * path -> { mtime, transcript }.
+   *
+   * Without this, every poll re-reads every transcript whether or not anything
+   * changed. Measured on a laptop with 40 recent sessions that is 5 MB per
+   * poll, or 15 MB a minute, forever — for files that are almost all
+   * identical to last time. `mtime` is already known from the directory scan,
+   * so skipping the read is free.
+   */
+  #transcripts = new Map();
 
   constructor({ exec = run, claudeBin = 'claude', projectsDir = join(homedir(), '.claude', 'projects') } = {}) {
     this.#exec = exec;
@@ -466,20 +476,28 @@ export class LocalAdapter {
     // has exited is not gone — it is unreachable, which this product already
     // renders honestly, and a command for it is held rather than failed.
     const candidates = new Map();
-    for (const [sessionId, agent] of running) candidates.set(sessionId, { agent, path: null });
+    for (const [sessionId, agent] of running) candidates.set(sessionId, { agent, path: null, mtime: null });
     for (const t of await this.recentTranscripts({ now })) {
       const existing = candidates.get(t.sessionId);
-      if (existing) existing.path = t.path;
-      else candidates.set(t.sessionId, { agent: { sessionId: t.sessionId }, path: t.path });
+      if (existing) {
+        existing.path = t.path;
+        existing.mtime = t.mtime;
+      } else {
+        candidates.set(t.sessionId, { agent: { sessionId: t.sessionId }, path: t.path, mtime: t.mtime });
+      }
     }
 
     const records = [];
-    for (const { agent, path } of candidates.values()) {
+    // Named for what it holds — files still inside the window. Not to be
+    // confused with the `live` FLAG below, which means the process is running.
+    const seenFiles = new Set();
+    for (const { agent, path, mtime } of candidates.values()) {
       const file = path ?? (await this.#transcriptPath(agent));
       let transcript = null;
       if (file) {
+        seenFiles.add(file);
         try {
-          transcript = readTranscript(await tailLines(file));
+          transcript = await this.#readCached(file, mtime);
         } catch {
           // A transcript we cannot read is a thinner record, not a lost
           // session: the process is still real and still worth showing.
@@ -495,7 +513,49 @@ export class LocalAdapter {
       );
     }
 
+    // Anything that dropped out of the window is not coming back into it, so
+    // its cached parse is dead weight.
+    for (const cached of this.#transcripts.keys()) {
+      if (!seenFiles.has(cached)) this.#transcripts.delete(cached);
+    }
+
     return records;
+  }
+
+  /**
+   * Parse a transcript, or reuse the last parse if the file has not changed.
+   *
+   * A transcript only ever grows, and `mtime` moves whenever it does, so an
+   * unchanged mtime means an unchanged answer.
+   */
+  async #readCached(path, knownMtime = null) {
+    // The directory scan already statted most of these; re-statting would be
+    // a second syscall per file per poll for an answer already in hand.
+    let mtime = knownMtime;
+    if (mtime == null) {
+      try {
+        ({ mtimeMs: mtime } = await stat(path));
+      } catch {
+        return null;
+      }
+    }
+
+    const cached = this.#transcripts.get(path);
+    if (cached && cached.mtime === mtime) {
+      cached.hits += 1;
+      return cached.transcript;
+    }
+
+    const transcript = readTranscript(await tailLines(path));
+    this.#transcripts.set(path, { mtime, transcript, hits: 0 });
+    return transcript;
+  }
+
+  /** How much re-reading the cache is saving. Surfaced by the spike. */
+  get cacheStats() {
+    let hits = 0;
+    for (const c of this.#transcripts.values()) hits += c.hits;
+    return { cached: this.#transcripts.size, hits };
   }
 
   async probe() {

@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 372 tests, no network, no CLI, no credentials
+npm test                        # 375 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs doctor       # can this machine run Fleet? no daemon needed
@@ -185,10 +185,13 @@ cost does not grow with your history.
 
 Three decisions in that adapter are worth stating:
 
-- **Only the tail of a transcript is read.** These files reach megabytes — one
-  session here is 7 MB — and this runs every poll. The first line of a tail read
-  is a fragment, so it is dropped rather than parsed: half a JSON object is not
-  a record.
+- **Only the tail of a transcript is read, and only when it changed.** These
+  files reach megabytes — one session here is 7 MB — and this runs every poll.
+  The first line of a tail read is a fragment, so it is dropped rather than
+  parsed: half a JSON object is not a record. Parses are cached by `mtime`,
+  which the directory scan already knows: measured without that, a laptop with
+  40 recent sessions read 5 MB per poll, 15 MB a minute, forever, for files
+  almost all identical to last time.
 - **"Blocked" is inferred, and deliberately hard to trigger.** The platform's
   own `needs_action` is not available locally, so it is inferred from the
   transcript — and inference here is dangerous in one specific way: Fleet's

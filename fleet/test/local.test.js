@@ -531,3 +531,70 @@ test('a finished turn with no question stays ready, never blocked', () => {
   assert.equal(s.lane, 'ready');
   assert.equal(s.actionable, false, 'and so it can never raise a push');
 });
+
+// ---------------------------------------------------------------- poll cost
+
+test('an unchanged transcript is not re-read on the next poll', async () => {
+  // Measured before this cache: a laptop with 40 recent sessions read 5 MB per
+  // poll — 15 MB a minute, forever — for files almost all identical to last
+  // time. A transcript only ever grows, so an unchanged mtime is an unchanged
+  // answer.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-x'), { recursive: true });
+    const file = join(projects, '-home-dev-x', 'sess.jsonl');
+    await writeFile(file, `${entry()}\n`);
+
+    const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: projects });
+    await adapter.list();
+    await adapter.list();
+    await adapter.list();
+
+    const { cached, hits } = adapter.cacheStats;
+    assert.equal(cached, 1);
+    assert.equal(hits, 2, 'read once, reused twice');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a transcript that changed IS re-read', async () => {
+  // The cache must never be the reason the board is stale — that would be a
+  // far worse bug than the reads it saves.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-x'), { recursive: true });
+    const file = join(projects, '-home-dev-x', 'sess.jsonl');
+    await writeFile(file, `${entry({ gitBranch: 'first' })}\n`);
+
+    const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: projects });
+    assert.equal(normalizeFleet(await adapter.list()).sessions[0].branch, 'first');
+
+    await new Promise((r) => setTimeout(r, 20));
+    await writeFile(file, `${entry({ gitBranch: 'second' })}\n`);
+    assert.equal(normalizeFleet(await adapter.list()).sessions[0].branch, 'second', 'the board followed the file');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('the cache does not grow with sessions that have fallen out of the window', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-local-'));
+  try {
+    const projects = join(dir, 'projects');
+    await mkdir(join(projects, '-home-dev-x'), { recursive: true });
+    await writeFile(join(projects, '-home-dev-x', 'sess.jsonl'), `${entry()}\n`);
+
+    const adapter = new LocalAdapter({ exec: fakeExec([]), projectsDir: projects });
+    await adapter.list();
+    assert.equal(adapter.cacheStats.cached, 1);
+
+    // A year later, nothing is in the window any more.
+    await adapter.list({ now: Date.now() + 365 * 24 * 3600 * 1000 });
+    assert.equal(adapter.cacheStats.cached, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
