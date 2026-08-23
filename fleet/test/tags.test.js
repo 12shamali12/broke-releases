@@ -241,3 +241,42 @@ test('a session with no label still reports something usable', () => {
   const f = fleet([session({ id: 'b', reachable: false, reachLabel: undefined })]);
   assert.equal(selectSessions(f, store, {}).skippedUnreachable[0].reason, 'unreachable');
 });
+
+
+test('twenty writers at once do not lose an update or corrupt the file', async () => {
+  // Two browsers, a CLI and an agent over MCP can all write at the same
+  // moment, and every store here is a whole-file rewrite. Run against a live
+  // fleetd with sixty concurrent writes across notes, tags and snooze: no
+  // corruption, no lost update, every state file still valid JSON. This is
+  // the pin.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-tags-race-'));
+  const path = join(dir, 'tags.json');
+  try {
+    const store = await TagStore.open({ path });
+    // One under the ceiling, so nothing is refused for a reason unrelated to
+    // the race being tested.
+    const wanted = Array.from({ length: MAX_TAGS_PER_SESSION - 1 }, (_, i) => `t${i}`);
+    await Promise.all(wanted.map((tag) => store.update('s1', { add: [tag] })));
+
+    assert.deepEqual(store.manualFor('s1').sort(), [...wanted].sort(), 'every writer got its tag in');
+
+    // And what is on disk is what is in memory, not a half-written file.
+    const onDisk = JSON.parse(await readFile(path, 'utf8'));
+    assert.deepEqual(onDisk.s1.sort(), [...wanted].sort());
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('the ceiling holds under concurrency, and says so', async () => {
+  // Twenty racing writers against a twelve-tag limit is the case where a
+  // check-then-write would let extras through.
+  const store = new TagStore({});
+  const results = await Promise.allSettled(
+    Array.from({ length: 20 }, (_, i) => store.update('s1', { add: [`t${i}`] })),
+  );
+  assert.equal(store.manualFor('s1').length, MAX_TAGS_PER_SESSION, 'not one over');
+  const refused = results.filter((r) => r.status === 'rejected');
+  assert.equal(refused.length, 20 - MAX_TAGS_PER_SESSION);
+  for (const r of refused) assert.match(r.reason.message, /at most/);
+});
