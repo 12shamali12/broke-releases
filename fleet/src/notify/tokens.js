@@ -52,6 +52,26 @@ export class ActionTokens {
    *   A digest notification covers several, so it carries none and may only
    *   report a receipt.
    */
+  /**
+   * Invalidate every outstanding token.
+   *
+   * Called when a device is revoked. Tokens are not per device — a
+   * notification goes to every subscription, so the one on the phone and the
+   * one on the laptop are the same token — which means "revoke that phone's
+   * tokens" cannot be expressed. All of them go instead.
+   *
+   * The cost is that a notification already sitting on the laptop's lock
+   * screen stops acting until the app is opened again. That is a small price
+   * for the case this exists to cover: you are revoking a device because
+   * something is wrong, and an alert already delivered to the phone you lost
+   * still has a working Reply button on it for the next hour.
+   */
+  revokeAll() {
+    const count = this.#tokens.size;
+    this.#tokens.clear();
+    return count;
+  }
+
   mint(sessionId = null) {
     this.#sweep();
     const token = randomBytes(24).toString('base64url');

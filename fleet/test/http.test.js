@@ -1154,7 +1154,7 @@ test('revoking a device reports what it took away', async () => {
   // The response is the only place anyone sees whether revocation actually
   // reached the things that matter — an open stream and a push subscription
   // both outlive the token check that let them start.
-  const h = await harness({ withPush: true });
+  const h = await harness({ withPush: true, withNotify: true });
   try {
     await h.poller.tick();
     const { devices } = await h.call('/v1/devices').then((r) => r.json());
@@ -1170,10 +1170,19 @@ test('revoking a device reports what it took away', async () => {
     assert.equal(subscribed.status, 201);
     assert.equal(h.push.subscriptions.length, 1);
 
+    // And an action token, as a delivered notification would hold.
+    const token = h.notify.tokens.mint(SESSION_ID);
+    assert.ok(h.notify.tokens.verify(token, 'snooze'));
+
     const body = await h.call(`/v1/devices/${devices[0].id}`, { method: 'DELETE' }).then((r) => r.json());
     assert.equal(body.ok, true);
     assert.equal(body.pushSubscriptionsRemoved, 1, 'the lock screen is the leak revoking has to close');
     assert.equal(h.push.subscriptions.length, 0);
+    assert.equal(body.notificationActionsRevoked, 1);
+    assert.equal(
+      h.notify.tokens.verify(token, 'snooze'), null,
+      'an alert already on the revoked lock screen keeps a working Reply button otherwise',
+    );
   } finally {
     await h.cleanup();
   }

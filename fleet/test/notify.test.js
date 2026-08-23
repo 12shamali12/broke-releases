@@ -567,3 +567,35 @@ test('a session that blocks while you are watching still reads as news', () => {
   const n = compose({ type: 'session.blocked', severity: 'push', sessionId: 's1', title: 'Importer rewrite' });
   assert.equal(n.title, 'Importer rewrite is blocked');
 });
+
+
+test('revoking a device stops notifications that were already delivered from acting', async () => {
+  // An alert sitting on the lock screen of the phone you just revoked still
+  // has a working Reply button on it for the rest of its hour. Tokens are not
+  // per device — a notification goes to every subscription, so the one on the
+  // phone and the one on the laptop are the same token — so "revoke that
+  // phone's tokens" cannot be expressed, and all of them go.
+  const tokens = new ActionTokens({});
+  const a = tokens.mint('s1');
+  const b = tokens.mint('s2');
+  assert.ok(tokens.verify(a, 'snooze'));
+  assert.ok(tokens.verify(b, 'snooze'));
+
+  assert.equal(tokens.revokeAll(), 2);
+  assert.equal(tokens.verify(a, 'snooze'), null);
+  assert.equal(tokens.verify(b, 'snooze'), null);
+});
+
+test('revoking with nothing outstanding is not an error', async () => {
+  assert.equal(new ActionTokens({}).revokeAll(), 0);
+});
+
+test('a token minted after a revocation works normally', async () => {
+  // Revoking is a moment, not a mode. The next notification must still be
+  // able to act, or the first revocation would break notifications for good.
+  const tokens = new ActionTokens({});
+  tokens.mint('s1');
+  tokens.revokeAll();
+  const fresh = tokens.mint('s1');
+  assert.equal(tokens.verify(fresh, 'snooze')?.sessionId, 's1');
+});

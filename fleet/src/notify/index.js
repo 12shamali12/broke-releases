@@ -134,6 +134,17 @@ export class NotificationService {
     return due.length;
   }
 
+  /**
+   * A device was revoked, so nothing already delivered may keep acting.
+   *
+   * See `ActionTokens.revokeAll` for why this is all of them rather than that
+   * device's: a notification goes to every subscription, so its token is not
+   * one device's to lose.
+   */
+  revokeTokens() {
+    return this.#tokens.revokeAll();
+  }
+
   /** Any action on a session counts as having dealt with the alert. */
   acknowledge(sessionId) {
     this.#policy.acknowledge(sessionId);

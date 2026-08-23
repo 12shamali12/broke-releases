@@ -30,7 +30,7 @@ comes from the terminal you are sitting at, and every one after it from
 something you have already decided to trust.
 
 ```
-npm test                        # 539 tests, no network, no CLI, no credentials
+npm test                        # 542 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs reach        # how to open it from your phone
@@ -78,6 +78,12 @@ kept receiving the whole fleet for as long as its connection survived, and kept
 putting session titles and the questions they were waiting on onto its lock
 screen indefinitely. Revocation that waits for a network hiccup is not
 revocation.
+
+It also invalidates every outstanding notification action token — all of them,
+not that device's, because a notification goes to every subscription and its
+token is therefore not one device's to lose. The cost is that an alert already
+on the laptop's lock screen stops acting until the app is opened again, which
+is a small price for the case revoking exists to cover.
 
 `/v1/health` and `/v1/pair` are open; everything else needs a device token.
 

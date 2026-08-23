@@ -696,7 +696,16 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
       // questions they are waiting on onto its lock screen — a leak that
       // arrives without anyone opening anything.
       const unsubscribed = push ? await push.forgetDevice(segments[2]) : 0;
-      return send(res, 200, { ok: true, streamsClosed: cut, pushSubscriptionsRemoved: unsubscribed });
+      // And the action tokens on notifications already delivered. An alert
+      // sitting on the lock screen of the phone you just revoked still has a
+      // working Reply button on it otherwise, for the rest of its hour.
+      const tokens = notify ? notify.revokeTokens() : 0;
+      return send(res, 200, {
+        ok: true,
+        streamsClosed: cut,
+        pushSubscriptionsRemoved: unsubscribed,
+        notificationActionsRevoked: tokens,
+      });
     }
 
     if (segments[0] === 'v1' && segments[1] === 'fleet' && segments[2]) {
