@@ -431,3 +431,45 @@ for (const client of CLIENTS) {
     }
   });
 }
+
+
+/**
+ * The two clients share no module — no build step, no framework, no
+ * dependency, which is a deliberate property of this project and the reason a
+ * handful of small helpers exist twice. That is an accepted cost right up
+ * until one copy is fixed and the other is not, which is how the phone and
+ * the cockpit came to disagree about what "unreachable" meant.
+ *
+ * So the duplication is pinned: both clients must carry the same set, and
+ * every one of them has a behavioural test above. This list is the contract.
+ */
+const SHARED_HELPERS = ['contextFill', 'composerHint', 'onClaudeAi', 'resumeCommand', 'loadWebfont'];
+
+test('both clients carry the same shared helpers', async () => {
+  const missing = [];
+  for (const client of CLIENTS) {
+    const src = await read(client.js);
+    for (const helper of SHARED_HELPERS) {
+      if (!new RegExp(`(function|const) ${helper}\\b`).test(src)) missing.push(`${client.name}: ${helper}`);
+    }
+  }
+  assert.deepEqual(missing, [], 'a helper fixed in one client and not the other is how they drift apart');
+});
+
+for (const client of CLIENTS) {
+  test(`${client.name}: the webfont is not render-blocking`, async () => {
+    // Measured: 12459ms to DOMContentLoaded with fonts.googleapis.com hanging,
+    // 54ms when it fails fast. A captive portal, a firewall, a plane or simply
+    // being offline all produce the first number — and it is worst in exactly
+    // the case the offline cache exists for.
+    const html = await read(client.js.replace(/[^/]+$/, 'index.html'));
+    assert.doesNotMatch(
+      html, /<link[^>]+rel="stylesheet"[^>]+fonts\.googleapis\.com/,
+      'a font stylesheet in the head blocks the first paint on a third party',
+    );
+    const js = await read(client.js);
+    assert.match(js, /loadWebfont\('https:\/\/fonts\.googleapis\.com/, 'load it after first paint instead');
+    // And not via an inline handler, which the CSP refuses anyway.
+    assert.doesNotMatch(html, /onload=/);
+  });
+}
