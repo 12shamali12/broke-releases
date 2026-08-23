@@ -182,3 +182,51 @@ test('nothing committed carries a real home directory or account name', async ()
     }
   }
 });
+
+
+/**
+ * Every event the daemon can emit has to be sayable by both clients.
+ *
+ * Adding an event type means touching diff.js, both `describe()` maps, and
+ * both clients' stream subscriptions — five places, and forgetting one of
+ * them is silent: the event arrives and renders as its own type string, or
+ * does not arrive at all. Nearly happened while adding `session.contextHigh`.
+ */
+test('no event type is emitted that a client cannot describe', async () => {
+  const emitters = ['src/diff.js', 'src/queue.js'];
+  const emitted = new Set();
+  for (const file of emitters) {
+    const src = await readFile(join(ROOT, file), 'utf8');
+    for (const m of src.matchAll(/type: '((?:session|rate|command)\.[a-zA-Z]+)'/g)) emitted.add(m[1]);
+    for (const m of src.matchAll(/event\('((?:session|rate|command)\.[a-zA-Z]+)'/g)) emitted.add(m[1]);
+  }
+  assert.ok(emitted.size >= 15, `expected the full set, found ${emitted.size}`);
+
+  for (const client of ['web/app.js', 'web-cockpit/cockpit.js']) {
+    const src = await readFile(join(ROOT, client), 'utf8');
+    const missing = [...emitted].filter((type) => !src.includes(`'${type}':`)).sort();
+    assert.deepEqual(missing, [], `${client} cannot describe: ${missing.join(', ')}`);
+  }
+});
+
+test('no client subscribes to an event the daemon never sends', async () => {
+  // The other direction. A typo in a subscription list is a stream handler
+  // that never fires, which looks exactly like a working one.
+  const emitters = ['src/diff.js', 'src/queue.js'];
+  const emitted = new Set(['fleet.snapshot', 'stream.gap']);
+  for (const file of emitters) {
+    const src = await readFile(join(ROOT, file), 'utf8');
+    for (const m of src.matchAll(/type: '((?:session|rate|command)\.[a-zA-Z]+)'/g)) emitted.add(m[1]);
+    for (const m of src.matchAll(/event\('((?:session|rate|command)\.[a-zA-Z]+)'/g)) emitted.add(m[1]);
+  }
+
+  for (const client of ['web/app.js', 'web-cockpit/cockpit.js']) {
+    const src = await readFile(join(ROOT, client), 'utf8');
+    // The array of names each client hands to addEventListener.
+    const list = /\[\s*\n?\s*'session\.blocked'[\s\S]*?\]/.exec(src);
+    assert.ok(list, `${client} has a subscription list`);
+    const subscribed = [...list[0].matchAll(/'([a-z]+\.[a-zA-Z]+)'/g)].map((m) => m[1]);
+    const unknown = subscribed.filter((t) => !emitted.has(t));
+    assert.deepEqual(unknown, [], `${client} listens for events nothing sends: ${unknown.join(', ')}`);
+  }
+});

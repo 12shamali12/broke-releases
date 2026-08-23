@@ -1655,6 +1655,11 @@ function describe(e) {
     'session.renamed': `${t} was renamed`,
     'session.appeared': `${t} appeared`,
     'session.vanished': `${t} is gone`,
+    // The counterpart to `session.blocked`, and the only entry in the feed
+    // that is good news. Missing from both clients until a hygiene check
+    // compared what the daemon emits against what they can say — so the feed
+    // printed the literal string "session.unblocked" instead.
+    'session.unblocked': `${t} stopped needing you`,
     'session.contextHigh': `${t} is ${e.percent}% through its context`,
     'session.modelChanged': `${t} → ${e.to}`,
     'session.effortChanged': `${t} effort → ${e.to}`,
