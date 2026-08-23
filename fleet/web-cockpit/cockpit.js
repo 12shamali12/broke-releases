@@ -153,6 +153,21 @@ const EVENT_TYPES = [
  * the token for a cookie scoped to /v1/stream and nothing else — without this
  * the live stream 401s in every browser, which is exactly what it did.
  */
+/** Debounced against EventSource's retry — "was I revoked" is not a question
+ *  whose answer changes ten times a minute. */
+let verifying = false;
+async function verifyStillPaired() {
+  if (verifying || !state.token) return;
+  verifying = true;
+  try {
+    await refresh();
+  } catch {
+    // A 401 already unpaired us inside `api`; anything else is the network.
+  } finally {
+    setTimeout(() => { verifying = false; }, 10_000);
+  }
+}
+
 async function authorizeStream() {
   try {
     await api('/v1/stream/authorize', { method: 'POST' });
@@ -176,7 +191,9 @@ async function connect() {
   }
   source = new EventSource('/v1/stream', { withCredentials: true });
   source.addEventListener('open', () => { state.connected = true; render(); });
-  source.addEventListener('error', () => { state.connected = false; render(); });
+  // Ask once whether we are still paired: EventSource never says why it
+  // failed, so a revoked device and a sleeping laptop look the same from here.
+  source.addEventListener('error', () => { state.connected = false; render(); verifyStillPaired(); });
   source.addEventListener('fleet.snapshot', (e) => setFleet(JSON.parse(e.data)));
   for (const type of EVENT_TYPES) {
     source.addEventListener(type, (e) => {

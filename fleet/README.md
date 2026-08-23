@@ -30,7 +30,7 @@ comes from the terminal you are sitting at, and every one after it from
 something you have already decided to trust.
 
 ```
-npm test                        # 531 tests, no network, no CLI, no credentials
+npm test                        # 535 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs reach        # how to open it from your phone
@@ -69,6 +69,12 @@ Fleet never offers an address that will not work: loopback, IPv6, link-local
 and Docker or VM bridges are all filtered out, because offering `172.17.0.1` as
 "try this from your phone" is worse than offering nothing — it looks like an
 answer.
+
+Revoking a device ends the streams it already holds. The token is checked when
+a stream opens and not again, so without that a revoked phone kept receiving the
+whole fleet — every title, every status line, every question — for as long as
+its connection survived. Revocation that waits for a network hiccup is not
+revocation.
 
 `/v1/health` and `/v1/pair` are open; everything else needs a device token.
 

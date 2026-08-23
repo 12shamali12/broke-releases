@@ -514,3 +514,25 @@ for (const client of CLIENTS) {
     assert.match(setFleet, /checkEpoch\(fleet\)/);
   });
 }
+
+for (const client of CLIENTS) {
+  test(`${client.name}: a dropped stream asks whether this device is still allowed in`, async () => {
+    // EventSource reconnects on its own and never says why it failed, so a
+    // revoked device and a sleeping laptop look identical from the client.
+    // Without asking, a revoked phone retried forever behind a board that
+    // still said "live".
+    const src = await read(client.js);
+    assert.match(src, /function verifyStillPaired/, 'the client has to ask');
+    const at = src.indexOf("addEventListener('error'");
+    assert.ok(at > 0, 'the stream has an error handler');
+    assert.match(
+      src.slice(at, at + 600), /verifyStillPaired\(\)/,
+      'and it asks from there, not from somewhere unrelated',
+    );
+
+    // Debounced: EventSource retries every three seconds, and "was I revoked"
+    // is not a question whose answer changes that often.
+    const fn = /function verifyStillPaired\(\)[\s\S]*?\n\}/.exec(src)[0];
+    assert.match(fn, /if \(verifying/, 'or a flapping connection becomes a request loop');
+  });
+}

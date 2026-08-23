@@ -1104,3 +1104,86 @@ test('a reset is not reported as a gap, because the repair differs', () => {
   assert.equal(reset.reset, true);
   assert.equal(reset.truncated, false);
 });
+
+
+// ------------------------------------------- revoking a device you have lost
+
+/**
+ * The token is checked when a stream opens and never again.
+ *
+ * So revoking a phone stopped new requests while the connection it already
+ * held kept delivering the whole fleet — every title, every status line, every
+ * question. Measured before this was fixed: a revoked device sat on a live
+ * board for as long as it liked, with zero 401s, because nothing asked.
+ */
+test('revoking a device ends the stream it already holds', async () => {
+  const h = await harness();
+  try {
+    await h.poller.tick();
+
+    const opened = await h.call('/v1/stream/authorize', { method: 'POST' });
+    const cookie = /^fleet_stream=([^;]+)/.exec(opened.headers.get('set-cookie'))[1];
+    const stream = await fetch(`${h.base}/v1/stream`, { headers: { cookie: `fleet_stream=${cookie}` } });
+    assert.equal(stream.status, 200);
+
+    const reader = stream.body.getReader();
+    await reader.read(); // the snapshot, so the connection is genuinely established
+    assert.equal(h.hub.size, 1);
+
+    const { devices } = await h.call('/v1/devices').then((r) => r.json());
+    const gone = await h.call(`/v1/devices/${devices[0].id}`, { method: 'DELETE' }).then((r) => r.json());
+    assert.equal(gone.streamsClosed, 1, 'the open stream is cut, not left running');
+    assert.equal(h.hub.size, 0);
+
+    // And the connection really ends rather than just being forgotten.
+    for (;;) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test('revoking one device leaves another device streaming', async () => {
+  // Revocation is per device. Signing the phone out must not sign out the
+  // laptop, which is the whole reason each device has its own token.
+  const h = await harness();
+  try {
+    await h.poller.tick();
+
+    const { code } = await h.call('/v1/devices/pair', { method: 'POST' }).then((r) => r.json());
+    const second = await fetch(`${h.base}/v1/pair`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, label: 'phone' }),
+    }).then((r) => r.json());
+
+    const cookieFor = async (token) => {
+      const res = await fetch(`${h.base}/v1/stream/authorize`, {
+        method: 'POST', headers: { authorization: `Bearer ${token}` },
+      });
+      return /^fleet_stream=([^;]+)/.exec(res.headers.get('set-cookie'))[1];
+    };
+
+    const a = await fetch(`${h.base}/v1/stream`, { headers: { cookie: `fleet_stream=${await cookieFor(h.token)}` } });
+    const b = await fetch(`${h.base}/v1/stream`, { headers: { cookie: `fleet_stream=${await cookieFor(second.token)}` } });
+    const ra = a.body.getReader();
+    const rb = b.body.getReader();
+    await ra.read();
+    await rb.read();
+    assert.equal(h.hub.size, 2);
+
+    const { devices } = await h.call('/v1/devices').then((r) => r.json());
+    const phone = devices.find((d) => d.label === 'phone');
+    const gone = await h.call(`/v1/devices/${phone.id}`, { method: 'DELETE' }).then((r) => r.json());
+
+    assert.equal(gone.streamsClosed, 1, 'exactly the revoked one');
+    assert.equal(h.hub.size, 1, 'the other device is still connected');
+
+    await ra.cancel();
+    await rb.cancel().catch(() => {});
+  } finally {
+    await h.cleanup();
+  }
+});

@@ -130,7 +130,15 @@ export class StreamHub {
    * @param since    Last-Event-ID or ?since=, for replay
    * @param snapshot current fleet, sent first so a cold client renders at once
    */
-  attach(res, { since = 0, snapshot = null } = {}) {
+  /**
+   * @param deviceId  whose stream this is, so revoking that device can end it.
+   *   Without it a revoked phone keeps receiving the whole fleet — every
+   *   title, every status line, every question — for as long as its
+   *   connection happens to survive, because the token is checked when the
+   *   stream opens and never again. Measured: a revoked device sat on a live
+   *   board with zero 401s, because nothing asked.
+   */
+  attach(res, { since = 0, snapshot = null, deviceId = null } = {}) {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache, no-transform',
@@ -166,11 +174,33 @@ export class StreamHub {
       res.write(frame({ id: entry.id, event: entry.type, data: entry }));
     }
 
+    res.fleetDeviceId = deviceId;
     this.#clients.add(res);
     res.on('close', () => this.#clients.delete(res));
 
     if (!this.#heartbeat) this.#startHeartbeat();
     return res;
+  }
+
+  /**
+   * End every stream belonging to a device. Revocation has to take effect now,
+   * not whenever the network next hiccups — that is the entire point of being
+   * able to revoke a phone you have lost.
+   */
+  closeFor(deviceId) {
+    if (!deviceId) return 0;
+    let closed = 0;
+    for (const res of [...this.#clients]) {
+      if (res.fleetDeviceId !== deviceId) continue;
+      this.#clients.delete(res);
+      try {
+        res.end();
+      } catch {
+        // Already gone; removing it from the set was the part that mattered.
+      }
+      closed += 1;
+    }
+    return closed;
   }
 
   broadcast(payload) {

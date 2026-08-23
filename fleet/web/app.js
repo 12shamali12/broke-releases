@@ -168,6 +168,27 @@ let source = null;
  * Cheap, idempotent, and needed on every cold start: a client that paired
  * earlier has a token in localStorage but no cookie.
  */
+/**
+ * Ask, once per disconnect, whether this device is still allowed in.
+ *
+ * Debounced against EventSource's three-second retry: the question is "was I
+ * revoked", and the answer does not change ten times a minute.
+ */
+let verifying = false;
+async function verifyStillPaired() {
+  if (verifying || !state.token) return;
+  verifying = true;
+  try {
+    await refresh();
+  } catch {
+    // 401 already unpaired us inside `api`. Anything else is the network,
+    // and the dated board is the correct answer to that.
+  } finally {
+    // Long enough that a flapping connection does not become a request loop.
+    setTimeout(() => { verifying = false; }, 10_000);
+  }
+}
+
 async function authorizeStream() {
   try {
     await api('/v1/stream/authorize', { method: 'POST' });
@@ -216,7 +237,13 @@ async function connect() {
   source.addEventListener('error', () => {
     state.connected = false;
     render();
-    // EventSource reconnects on its own; nothing to do but reflect it.
+    // EventSource reconnects on its own and never tells you why it failed —
+    // a revoked device and a sleeping laptop look identical from here. So ask
+    // once: `api` turns a 401 into an unpair and sends you back to pairing,
+    // and a network error is caught and ignored, which leaves the board dated
+    // as it should be. Without this a revoked phone retried forever behind a
+    // board that still said "live".
+    verifyStillPaired();
   });
 
   // Every named event also arrives on the generic handler.

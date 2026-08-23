@@ -615,7 +615,12 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
 
     if (method === 'GET' && path === '/v1/stream') {
       const since = Number(req.headers['last-event-id'] ?? url.searchParams.get('since') ?? 0);
-      streamHub.attach(res, { since, snapshot: poller.fleet ? withHealth(poller.fleet) : null });
+      streamHub.attach(res, {
+        since,
+        snapshot: poller.fleet ? withHealth(poller.fleet) : null,
+        // So revoking this device can end the stream immediately.
+        deviceId: device.id,
+      });
       return undefined; // stays open
     }
 
@@ -681,7 +686,12 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
     if (method === 'DELETE' && segments[0] === 'v1' && segments[1] === 'devices' && segments[2]) {
       const removed = await devices.revoke(segments[2]);
       if (!removed) throw new HttpError(404, 'no such device');
-      return send(res, 200, { ok: true });
+      // Cut its open streams. Otherwise the token stops working for new
+      // requests while the connection it already holds keeps delivering the
+      // whole fleet — which is the opposite of what revoking a lost phone is
+      // for.
+      const cut = streamHub.closeFor(segments[2]);
+      return send(res, 200, { ok: true, streamsClosed: cut });
     }
 
     if (segments[0] === 'v1' && segments[1] === 'fleet' && segments[2]) {
