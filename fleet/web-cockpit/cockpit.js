@@ -220,6 +220,30 @@ const svg = (d, cls) => h('span', { class: cls, 'aria-hidden': 'true', html: `<s
  * `known: false` renders an empty striped track and the word "unknown", which
  * is true and is also the thing that will prompt someone to fix the adapter.
  */
+/**
+ * Is this session on claude.ai at all?
+ *
+ * `claude.ai/code/<id>` is a cloud URL. A session with no cloud session id has
+ * no page there, and "Open in Claude" opened a 404 with no hint that the
+ * reason is the same one that stops Fleet messaging it. Matched on the id
+ * shape, which is what the CLI itself checks.
+ */
+const onClaudeAi = (s) => /^session_[A-Za-z0-9]{4,}$/.test(String(s?.id ?? ''));
+
+/** Where to go instead, when it is only on this machine. */
+const resumeCommand = (s) =>
+  s?.cwd ? `cd ${s.cwd} && claude --resume ${s.id}` : `claude --resume ${s.id}`;
+
+/** Open it where it actually lives — a cloud page, or this laptop's CLI. */
+function openSession(s) {
+  if (onClaudeAi(s)) return window.open(`https://claude.ai/code/${s.id}`, '_blank');
+  const command = resumeCommand(s);
+  navigator.clipboard?.writeText(command)
+    .then(() => toast('Copied — run it in a terminal'))
+    // Clipboard needs a secure context, which plain HTTP on a LAN is not.
+    .catch(() => toast(command));
+}
+
 function contextFill(s) {
   const used = s.contextUsed;
   if (!s.contextMax || !Number.isFinite(used)) {
@@ -495,7 +519,7 @@ function onKey(e) {
   if (mod && e.key.toLowerCase() === 'o') {
     e.preventDefault();
     const s = current();
-    if (s) window.open(`https://claude.ai/code/${s.id}`, '_blank');
+    if (s) openSession(s);
     return;
   }
   if (mod && e.key >= '1' && e.key <= '9') { e.preventDefault(); return selectByIndex(Number(e.key)); }
@@ -920,7 +944,7 @@ function sessionHead(s) {
        h('span', { class: 'k', style: running ? 'color:var(--onac);border-color:var(--onac)' : '' }, 'esc')),
 
     h('div', pressable({ class: 'chip act', 'aria-label': `Open ${s.title} on claude.ai` },
-      () => window.open(`https://claude.ai/code/${s.id}`, '_blank')),
+      () => openSession(s)),
       'Open', h('span', { class: 'k' }, '⌘O')));
 }
 
@@ -1088,7 +1112,7 @@ function panel(s) {
     ['Compact', '⌘⇧C', () => dispatch(s.id, 'compact', {}), !s.reachable],
     [s.snoozedUntil ? 'Wake' : 'Snooze 4h', '⌘⇧S', () => snoozeSession(s), false],
     ['Appearance', '⌘,', () => { openOverlay('look'); }, false],
-    ['Open in Claude', '⌘O', () => window.open(`https://claude.ai/code/${s.id}`, '_blank'), false],
+    [onClaudeAi(s) ? 'Open in Claude' : 'Copy resume command', '⌘O', () => openSession(s), false],
   ];
 
   return h('div', { class: 'panel' },

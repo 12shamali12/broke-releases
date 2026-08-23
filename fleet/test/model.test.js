@@ -160,3 +160,16 @@ test('a nonsense reading is treated as no reading', () => {
     assert.equal(s.contextUsed, null, `${String(bad)} must not become a percentage`);
   }
 });
+
+test('a session reports where it is running, so there is a way back into it', () => {
+  // `claude.ai/code/<id>` is a cloud URL, and a session with no cloud id has
+  // no page there. `fleet open` printed one anyway — a link that 404s, with
+  // no hint that the reason is the same one that stops Fleet messaging it.
+  // The way back into a local session is the CLI it is already running in,
+  // which needs its working directory.
+  const s = normalizeSession({ id: 's-local', session_context: { model: 'claude-opus-5', cwd: '/home/dev/importer' } });
+  assert.equal(s.cwd, '/home/dev/importer');
+
+  // A cloud session does not need one, and must not invent one.
+  assert.equal(normalizeSession({ id: 'session_01X' }).cwd, null);
+});

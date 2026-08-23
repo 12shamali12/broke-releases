@@ -394,3 +394,18 @@ for (const client of CLIENTS) {
     assert.match(call[0], /Queued/);
   });
 }
+
+for (const client of CLIENTS) {
+  test(`${client.name}: "Open in Claude" is not offered for a session that has no page there`, async () => {
+    // It opened claude.ai/code/<id> for every session, including the local
+    // ones that have no cloud id — a 404, with no hint that the reason is
+    // the same one that stops Fleet messaging them.
+    const src = await read(client.js);
+    assert.match(src, /const onClaudeAi = /, 'both clients must be able to tell');
+    for (const call of src.matchAll(/window\.open\(`https:\/\/claude\.ai\/code[^)]*\)/g)) {
+      const before = src.slice(Math.max(0, call.index - 200), call.index);
+      assert.match(before, /onClaudeAi\(s\)/, 'guard the cloud URL on the session actually having one');
+    }
+    assert.match(src, /claude --resume/, 'and offer the way back that does work');
+  });
+}

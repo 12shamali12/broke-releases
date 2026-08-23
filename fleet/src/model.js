@@ -208,6 +208,11 @@ export function normalizeSession(raw, now = Date.now()) {
     // say "unknown", which is true.
     contextUsed: Number.isFinite(ctx.context_used_tokens) ? ctx.context_used_tokens : null,
     effort: ctx.effort_level ?? null,
+    // Where the session is actually running. Surfaced because it is the only
+    // way back into a local one: `claude.ai/code/<id>` is a cloud URL, and a
+    // session with no cloud id has no page there — `fleet open` was printing
+    // one anyway, and it 404s.
+    cwd: ctx.cwd ?? ctx.cwd_only ?? null,
     permissionMode: ctx.permission_mode ?? raw.external_metadata?.permission_mode ?? null,
 
     envKind,

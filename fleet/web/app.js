@@ -498,6 +498,20 @@ function composerHint(s) {
   return 'Queued until this session reconnects…';
 }
 
+/**
+ * Is this session on claude.ai at all?
+ *
+ * `claude.ai/code/<id>` is a cloud URL. A session with no cloud session id has
+ * no page there, and "Open in Claude" opened a 404 with no hint that the
+ * reason is the same one that stops Fleet messaging it. Matched on the id
+ * shape, which is what the CLI itself checks.
+ */
+const onClaudeAi = (s) => /^session_[A-Za-z0-9]{4,}$/.test(String(s?.id ?? ''));
+
+/** Where to go instead, when it is only on this machine. */
+const resumeCommand = (s) =>
+  s?.cwd ? `cd ${s.cwd} && claude --resume ${s.id}` : `claude --resume ${s.id}`;
+
 function contextFill(s) {
   const used = s.contextUsed;
   if (!s.contextMax || !Number.isFinite(used)) {
@@ -877,7 +891,24 @@ function viewSession() {
           },
         }, s.snoozedUntil ? 'Wake' : 'Snooze'),
         h('button', { id: 'send', class: 'primary', disabled: !s.reachable, onclick: send }, 'Send'),
-        h('button', { id: 'open-claude', class: 'quiet', style: 'flex-grow:0', onclick: () => window.open(`https://claude.ai/code/${s.id}`, '_blank') }, 'Open in Claude'))),
+        // A local session has no page on claude.ai, so the button copies the
+        // command that reopens it instead of opening a 404.
+        onClaudeAi(s)
+          ? h('button', { id: 'open-claude', class: 'quiet', style: 'flex-grow:0', onclick: () => window.open(`https://claude.ai/code/${s.id}`, '_blank') }, 'Open in Claude')
+          : h('button', {
+              id: 'open-claude', class: 'quiet', style: 'flex-grow:0',
+              title: resumeCommand(s),
+              onclick: async () => {
+                try {
+                  await navigator.clipboard.writeText(resumeCommand(s));
+                  toast('Copied — run it on your laptop');
+                } catch {
+                  // Clipboard needs a secure context; over plain HTTP on a LAN
+                  // it simply is not there. Showing the command beats failing.
+                  toast(resumeCommand(s));
+                }
+              },
+            }, 'Copy resume command'))),
   ];
 }
 

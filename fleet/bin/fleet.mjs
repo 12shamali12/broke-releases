@@ -22,7 +22,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ago, freshness, resolveRef } from '../src/cli-helpers.js';
 import { FAIL, OK, UNKNOWN, diagnose } from '../src/doctor.js';
-import { LocalAdapter } from '../src/adapters/local.js';
+import { LocalAdapter, isCloudAddressable } from '../src/adapters/local.js';
 import { excerptOf } from '../src/queue.js';
 import { reachOptions } from '../src/reach.js';
 
@@ -570,7 +570,17 @@ switch (command) {
 
   case 'open': {
     const s = await resolve(rest[0] ?? die('usage: fleet open <ref>'));
-    console.log(`https://claude.ai/code/${s.id}`);
+    // A session with no cloud id has no page on claude.ai. Printing the URL
+    // anyway gave you a link that 404s and no hint that the reason is the
+    // same one that stops Fleet messaging it. The way back into a local
+    // session is the CLI it is already running in.
+    if (isCloudAddressable(s.id)) {
+      console.log(`https://claude.ai/code/${s.id}`);
+    } else {
+      if (s.cwd) console.log(`cd ${s.cwd} && claude --resume ${s.id}`);
+      else console.log(`claude --resume ${s.id}`);
+      console.log(`${C.dim}local session — it has no page on claude.ai. Run /remote-control inside it to give it one.${C.off}`);
+    }
     break;
   }
 
