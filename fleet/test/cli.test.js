@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ago, freshness, resolveRef } from '../src/cli-helpers.js';
+import { ago, duration, freshness, parseHours, resolveRef } from '../src/cli-helpers.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -25,6 +25,54 @@ test('freshness never produces "now ago"', () => {
   assert.equal(freshness(null), 'never');
   assert.equal(freshness(1_000), 'just now');
   assert.equal(freshness(3 * 3600_000), '3h ago');
+});
+
+test('a duration under a minute is a number, not "now"', () => {
+  // Measured against a real daemon: p50 of 6s rendered as "typical: now",
+  // which reads as a placeholder — and "now" is exactly the number a fleet
+  // that is working produces most often. The metric that justifies the whole
+  // project could not display its own success.
+  assert.equal(duration(6_000), '6s');
+  assert.equal(duration(500), '<1s');
+  assert.equal(duration(0), '<1s');
+  assert.notEqual(duration(6_000), ago(6_000));
+});
+
+test('duration rounds up through the units rather than saying "60s"', () => {
+  assert.equal(duration(59_600), '1m');
+  assert.equal(duration(59.6 * 60_000), '1h');
+  assert.equal(duration(3 * 3600_000), '3h');
+  assert.equal(duration(5 * 86_400_000), '5d');
+});
+
+test('a duration that is missing or nonsensical says so instead of guessing', () => {
+  // `snoozedUntil - Date.now()` goes negative the moment a snooze expires and
+  // before the next poll clears it. Rendering that as a time is worse than
+  // rendering nothing.
+  assert.equal(duration(null), '—');
+  assert.equal(duration(-1_000), '—');
+  assert.equal(duration(NaN), '—');
+  assert.equal(duration(Infinity), '—');
+});
+
+test('a snooze length is parsed, never coerced', () => {
+  // `fleet snooze 2 30m` muted for four hours. Every step was quiet:
+  // Number('30m') is NaN, JSON.stringify writes NaN as null, and the server
+  // read null as "not specified". The confirmation then said "muted for 4h",
+  // which was true and told you nothing about the 30m being discarded.
+  assert.equal(parseHours('30m'), 0.5);
+  assert.equal(parseHours('2h'), 2);
+  assert.equal(parseHours('1d'), 24);
+  assert.equal(parseHours('4'), 4, 'a bare number stays hours, as the usage line always said');
+  assert.equal(parseHours('3 hours'), 3);
+});
+
+test('a snooze length it cannot read is refused, not defaulted', () => {
+  // null is the caller's cue to exit. Anything that silently becomes a number
+  // here becomes a mute the person did not ask for.
+  for (const bad of ['abc', '', '  ', '-2', '0', '30x', '1e3', 'h', null, undefined, {}]) {
+    assert.equal(parseHours(bad), null, JSON.stringify(bad));
+  }
 });
 
 test('a board position resolves to that session', () => {

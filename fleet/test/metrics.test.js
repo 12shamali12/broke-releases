@@ -151,6 +151,67 @@ test('the window excludes old episodes but never an open one', () => {
   assert.equal(r.blocked.openNow, 1, 'but something still waiting is always current');
 });
 
+test('a whole report matches what you get computing it by hand', () => {
+  // Every other test here fixes one behaviour. This one takes a population
+  // written down in advance, states every number the report should produce,
+  // and checks all of them together — because the failure this guards against
+  // is not one wrong branch but two right ones that disagree, which is
+  // invisible to a test that only ever looks at one field.
+  //
+  // The same population was run through a real daemon and read off
+  // `fleet stats`; the numbers below are what it printed.
+  let now = 1_000 * DAY;
+  const m = new Metrics({ now: () => now });
+
+  // Ten answered, chosen so nearest-rank picks a value rather than averaging.
+  const answered = [1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 2 * DAY];
+  for (const [i, rt] of answered.entries()) {
+    now = 1_000 * DAY - 3 * DAY;
+    m.blocked(`answered-${i}`, { title: `A${i}` });
+    m.responded(`answered-${i}`, { at: now + rt });
+    m.unblocked(`answered-${i}`, { at: now + rt + MIN });
+  }
+  // Three that resolved with nobody answering: episodes, but not response times.
+  for (let i = 0; i < 3; i++) {
+    now = 1_000 * DAY - 2 * DAY;
+    m.blocked(`self-${i}`, { title: `S${i}` });
+    m.unblocked(`self-${i}`, { at: now + HOUR });
+  }
+  // One outside the window. Its 999-day response time must not reach the tail.
+  now = 1_000 * DAY - 30 * DAY;
+  m.blocked('ancient', { title: 'Ancient' });
+  m.responded('ancient', { at: now + 999 * DAY });
+  m.unblocked('ancient', { at: now + 999 * DAY });
+
+  // And one still open, unanswered, 20 hours in.
+  now = 1_000 * DAY;
+  m.blocked('open-1', { title: 'Importer rewrite', at: now - 20 * HOUR });
+
+  const r = m.report();
+
+  // Eleven response times: ten answered, plus the open one's wait so far.
+  // Sorted, the 6th of 11 is 6s (ceil(.50 * 11)) and the 10th is 20h.
+  assert.deepEqual(r.timeToAcknowledge, { n: 11, p50: 6_000, p90: 20 * HOUR, worst: 2 * DAY });
+
+  // The three counts partition every episode in the window: 10 + 3 + 1 = 14,
+  // and 14 is what was recorded inside seven days.
+  assert.equal(r.blocked.answered, 10);
+  assert.equal(r.blocked.unanswered, 3);
+  assert.equal(r.blocked.openNow, 1);
+  assert.equal(r.blocked.openAnswered, 0);
+  assert.equal(r.blocked.episodes, 13, 'the 30-day-old episode is outside the window');
+  // The invariant the stats screen relies on: the three numbers it prints add
+  // up to every episode there is, with nothing double-counted and nothing
+  // dropped. Written generally so it still holds when openAnswered is not 0.
+  assert.equal(r.blocked.answered + r.blocked.unanswered, r.blocked.episodes);
+  assert.equal(r.blocked.openAnswered + r.blocked.stillWaiting.length, r.blocked.openNow);
+
+  assert.deepEqual(
+    r.blocked.stillWaiting.map((w) => [w.title, w.waitingMs]),
+    [['Importer rewrite', 20 * HOUR]],
+  );
+});
+
 test('the command failure rate is the number that must stay zero', () => {
   const m = new Metrics({ now: () => 0 });
   m.queued('s1');

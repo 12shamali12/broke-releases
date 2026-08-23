@@ -344,6 +344,29 @@ function ago(ms) {
   return `${Math.round(hr / 24)}d`;
 }
 
+/**
+ * A length of time, as opposed to how long ago something was.
+ *
+ * `ago` collapses everything under a minute to "now", which is right for an
+ * age and wrong for a duration: a fleet that is working answers in seconds, so
+ * the headline metric rendered with `ago` reads "typical: now" — the best
+ * result the tool can produce, shown as if it were a placeholder.
+ */
+function duration(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '—';
+  if (ms < 0) return '—';
+  // Below the smallest unit it can name, and rounding 500ms up to "1s" while
+  // rounding 400ms down to nothing is the kind of seam a reader notices.
+  if (ms < 1000) return '<1s';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const hr = Math.round(m / 60);
+  if (hr < 48) return `${hr}h`;
+  return `${Math.round(hr / 24)}d`;
+}
+
 function toast(text) {
   const el = document.getElementById('toast');
   el.textContent = text;
@@ -730,7 +753,7 @@ function paletteItems() {
     rows.push({
       group: 'This session', glyph: '⌁', tone: 'wk',
       title: s.snoozedUntil ? 'Wake this session' : 'Snooze alerts for 4 hours',
-      sub: s.snoozedUntil ? `muted for another ${ago(s.snoozedUntil - Date.now())}` : 'it stays on the board, marked',
+      sub: s.snoozedUntil ? `muted for another ${duration(s.snoozedUntil - Date.now())}` : 'it stays on the board, marked',
       run: () => { snoozeSession(s); closeOverlay(); },
     });
     rows.push({
@@ -834,7 +857,7 @@ function topBar() {
     h('span', { class: 'grow' }),
     rl?.resetsAt
       ? h('div', { class: 'chip' }, h('span', { class: 'lbl' }, '5H'),
-          h('span', { class: 'val' }, `resets ${ago(rl.resetsAt - Date.now())}`))
+          h('span', { class: 'val' }, `resets ${duration(rl.resetsAt - Date.now())}`))
       : null,
     h('div', pressable({ class: 'chip act', 'aria-label': `Appearance. Text size ${SIZES[state.look.size]} pixels` }, () => openOverlay('look')),
       h('span', { class: 'lbl' }, 'TEXT'), h('span', { class: 'val' }, `${SIZES[state.look.size]}px`), h('span', { class: 'k' }, '⌘,')),
@@ -950,7 +973,7 @@ function railRow(s, index) {
     id: `rail-${s.id}`,
     tabindex: selected ? '0' : '-1',
     'aria-selected': String(selected),
-    'aria-label': `${index}. ${s.title}, ${s.reachable ? s.lane : (s.reachLabel ?? 'unreachable')}, idle ${ago(s.staleFor)}${
+    'aria-label': `${index}. ${s.title}, ${s.reachable ? s.lane : (s.reachLabel ?? 'unreachable')}, idle ${duration(s.staleFor)}${
       s.summary?.needsAction ? `, needs you: ${s.summary.needsAction}` : ''}`,
   }, () => { state.selected = s.id; state.menu = null; render(); }),
     h('span', { class: `dot ${laneDot(s)}`, 'aria-hidden': 'true' }),
@@ -961,8 +984,8 @@ function railRow(s, index) {
         h('div', { class: `meter${ctx.hot ? ' hot' : ''}${ctx.known ? '' : ' unknown'}` }, h('i', { style: `width:${ctx.pct}%` })),
         h('span', { class: 'ctx' }, s.contextMax >= 1e6 ? '1M' : '200K'))),
     h('div', { class: 'right' },
-      h('span', { class: `age${(s.staleFor ?? 0) > 864e5 ? ' hot' : ''}`, title: s.snoozedUntil ? `muted for ${ago(s.snoozedUntil - Date.now())}` : null },
-        s.snoozedUntil ? `⌁${ago(s.snoozedUntil - Date.now())}` : ago(s.staleFor)),
+      h('span', { class: `age${(s.staleFor ?? 0) > 864e5 ? ' hot' : ''}`, title: s.snoozedUntil ? `muted for ${duration(s.snoozedUntil - Date.now())}` : null },
+        s.snoozedUntil ? `⌁${duration(s.snoozedUntil - Date.now())}` : ago(s.staleFor)),
       index <= 9 ? h('span', { class: 'jump' }, `⌘${index}`) : null));
 }
 
@@ -1214,7 +1237,7 @@ function panel(s) {
       h('div', { style: 'height:13px' }),
       h('div', { class: 'budget-row' }, h('span', { class: 'a' }, '5-hour window'),
         h('span', { class: 'b' }, rl?.status ?? '—')),
-      h('div', { class: 'note' }, rl?.resetsAt ? `resets in ${ago(rl.resetsAt - Date.now())} · shared by every session` : 'no reading yet')),
+      h('div', { class: 'note' }, rl?.resetsAt ? `resets in ${duration(rl.resetsAt - Date.now())} · shared by every session` : 'no reading yet')),
 
     state.history[s.id]?.length
       ? h('div', { class: 'sect' },
@@ -1235,7 +1258,7 @@ function panel(s) {
     h('div', { class: 'sect' },
       h('div', { class: 'h' }, 'Session'),
       [['Repository', s.repo ?? '—'], ['Branch', s.branch ?? '—'], ['Permission', s.permissionMode ?? '—'],
-       ['Environment', `${s.envKind ?? '?'} · ${s.connection ?? '?'}`], ['Idle for', ago(s.staleFor)]]
+       ['Environment', `${s.envKind ?? '?'} · ${s.connection ?? '?'}`], ['Idle for', duration(s.staleFor)]]
         .map(([k, v]) => h('div', { class: 'kv' }, h('span', { class: 'k' }, k), h('span', { class: 'v' }, v)))),
 
     h('div', { class: 'sect' },
@@ -1450,14 +1473,14 @@ function notifyRules() {
     h('div', { style: 'font-size:9.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--ft);margin-bottom:9px' },
       'How it tells you'),
     h('div', { class: 'opts' },
-      opt(n.escalate, n.escalate ? `escalates after ${ago(n.escalateAfterMs)}` : 'one alert only',
+      opt(n.escalate, n.escalate ? `escalates after ${duration(n.escalateAfterMs)}` : 'one alert only',
         () => set({ escalate: !n.escalate }), 'Escalate unanswered alerts'),
       opt(Boolean(n.quietHours),
         n.quietHours ? `quiet ${hour(n.quietHours.from)}–${hour(n.quietHours.to)}` : 'no quiet hours',
         () => set({ quietHours: n.quietHours ? null : { from: 23, to: 8 } }), 'Quiet hours')),
     h('div', { style: 'font-size:11.5px;color:var(--dm);margin-top:9px;line-height:1.55' },
       n.escalate
-        ? `A blocked session you do not act on is mentioned again after ${ago(n.escalateAfterMs)}, then once more, then never. Three is where a person either deals with it or has decided not to — a fourth is what makes someone mute the app.`
+        ? `A blocked session you do not act on is mentioned again after ${duration(n.escalateAfterMs)}, then once more, then never. Three is where a person either deals with it or has decided not to — a fourth is what makes someone mute the app.`
         : 'Each blocked session raises exactly one alert, however long it then waits.'),
     n.escalating?.length
       ? h('div', { style: 'font-size:11.5px;color:var(--ac);margin-top:7px' },
@@ -1554,7 +1577,7 @@ function statsOverlay() {
     h('div', { style: 'flex:1;min-width:0' },
       h('div', {
         style: `font-family:var(--mono);font-size:27px;font-weight:600;line-height:1.1;${tone ? `color:var(--${tone})` : ''}`,
-      }, value == null ? '—' : ago(value)),
+      }, value == null ? '—' : duration(value)),
       h('div', { style: 'font-size:9.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--ft);margin-top:5px' }, label));
 
   return [
@@ -1588,7 +1611,7 @@ function statsOverlay() {
                         w.inferred
                           ? h('span', { style: 'font-size:9.5px;color:var(--ft)', title: 'Backdated from how long it has been idle — this wait began before fleetd was watching.' }, 'inferred')
                           : null,
-                        h('span', { style: 'font-family:var(--mono);font-size:11px;color:var(--ac)' }, ago(w.waitingMs)))))
+                        h('span', { style: 'font-family:var(--mono);font-size:11px;color:var(--ac)' }, duration(w.waitingMs)))))
                 : null,
 
               notifyRules(),
@@ -1599,7 +1622,7 @@ function statsOverlay() {
                   h('div', {}, `${m.delivery.commandsQueued} queued · ${m.delivery.commandsSent} sent · `,
                     h('span', { style: m.delivery.commandsFailed ? 'color:var(--ac);font-weight:600' : '' },
                       `${m.delivery.commandsFailed} failed`)),
-                  h('div', {}, `${m.delivery.pollOk} polls ok · ${m.delivery.pollFailed} failed · up ${ago(m.uptimeMs)}`),
+                  h('div', {}, `${m.delivery.pollOk} polls ok · ${m.delivery.pollFailed} failed · up ${duration(m.uptimeMs)}`),
                   m.delivery.commandsFailed
                     ? h('div', { style: 'color:var(--ac);margin-top:6px' }, 'A command that never arrived is the one failure this system is built to prevent. This number should be zero.')
                     : null)),
@@ -1682,7 +1705,7 @@ function describe(e) {
     // rather than watching it happen. "is blocked" would date a three-day
     // wait to whenever the daemon last restarted.
     'session.blocked': e.sinceStart ? `${t} has been waiting` : `${t} is blocked`,
-    'session.stalled': `${t} has been stuck ${ago(e.staleFor)}`,
+    'session.stalled': `${t} has been stuck ${duration(e.staleFor)}`,
     'session.reviewReady': `${t} is ready for review`,
     'session.started': `${t} started working`,
     'session.finished': `${t} finished its turn`,

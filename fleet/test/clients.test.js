@@ -443,7 +443,28 @@ for (const client of CLIENTS) {
  * So the duplication is pinned: both clients must carry the same set, and
  * every one of them has a behavioural test above. This list is the contract.
  */
-const SHARED_HELPERS = ['contextFill', 'composerHint', 'onClaudeAi', 'resumeCommand', 'loadWebfont'];
+const SHARED_HELPERS = ['contextFill', 'composerHint', 'onClaudeAi', 'resumeCommand', 'loadWebfont', 'duration'];
+
+for (const client of CLIENTS) {
+  test(`${client.name}: the metric that measures success can display success`, async () => {
+    // `ago` collapses everything under a minute to "now", which is correct for
+    // an age and wrong for a length of time. A fleet that is working answers
+    // in seconds, so the headline stat rendered with `ago` reads
+    // "typical: now" — and in the cockpit it reads that at 27px. Measured
+    // against a real daemon: p50 of 6s printed as "now" beside a p90 of "20h".
+    const src = await read(client.js);
+    const fn = /function duration\(ms\)[\s\S]*?\n\}/.exec(src);
+    assert.ok(fn, 'a duration formatter, separate from the age one');
+    assert.doesNotMatch(fn[0], /'now'/, 'a duration is never "now"');
+    assert.match(fn[0], /<1s/, 'and below its smallest unit it says so');
+
+    // Every stat in the metrics view is a length of time, not an age.
+    for (const site of ['(value)', '(w.waitingMs)']) {
+      assert.ok(!src.includes(`ago${site}`), `ago${site} renders a duration as an age`);
+      assert.ok(src.includes(`duration${site}`), `duration${site} must render the metric`);
+    }
+  });
+}
 
 test('both clients carry the same shared helpers', async () => {
   const missing = [];

@@ -238,5 +238,15 @@ export class HistoryStore {
 function formatAge(ms) {
   if (ms == null) return 'a day';
   const hours = Math.round(ms / 3_600_000);
-  return hours >= 48 ? `${Math.round(hours / 24)} days` : `${hours} hours`;
+  // Rounding to hours makes anything under half an hour "0 hours", and any
+  // count of one reads "1 hours". A history line is read long after the fact,
+  // when the only thing left to judge it by is whether it sounds written.
+  if (hours < 1) {
+    const minutes = Math.round(ms / 60_000);
+    return minutes <= 1 ? 'a minute' : `${minutes} minutes`;
+  }
+  if (hours === 1) return 'an hour';
+  if (hours < 48) return `${hours} hours`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? 'a day' : `${days} days`;
 }

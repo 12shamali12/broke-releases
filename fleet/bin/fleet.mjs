@@ -20,7 +20,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ago, freshness, resolveRef } from '../src/cli-helpers.js';
+import { ago, duration, freshness, parseHours, resolveRef } from '../src/cli-helpers.js';
 import { FAIL, OK, UNKNOWN, diagnose } from '../src/doctor.js';
 import { LocalAdapter, isCloudAddressable } from '../src/adapters/local.js';
 import { excerptOf } from '../src/queue.js';
@@ -153,7 +153,7 @@ function printBoard(fleet, { lane = null } = {}) {
     // clients matching prose means three clients that break when it is
     // reworded.
     const flag = s.reachable ? '' : ` ${C.dim}[${s.reachLabel ?? 'unreachable'}]${C.off}`;
-    const muted = s.snoozedUntil ? ` ${C.dim}[snoozed ${ago(s.snoozedUntil - Date.now())}]${C.off}` : '';
+    const muted = s.snoozedUntil ? ` ${C.dim}[snoozed ${duration(s.snoozedUntil - Date.now())}]${C.off}` : '';
     console.log(` ${index} ${colour}${LANE_MARK[s.lane] ?? '·'}${C.off} ${title}  ${meta}${flag}${muted}`);
     if (s.summary?.needsAction) {
       console.log(`    ${C.ac}→ ${s.summary.needsAction}${C.off}`);
@@ -327,14 +327,20 @@ switch (command) {
     break;
 
   case 'snooze': {
-    const [ref, hours = '4'] = rest;
-    if (!ref) die('usage: fleet snooze <ref> [hours]   (fleet wake <ref> to undo)');
+    const [ref, howLong = '4'] = rest;
+    if (!ref) die('usage: fleet snooze <ref> [30m|4h|2d]   (fleet wake <ref> to undo)');
+    const hours = parseHours(howLong);
+    // Refused, not defaulted: muting for four hours when you asked for thirty
+    // minutes is a wrong action taken silently, which is the one thing this
+    // tool is not allowed to do.
+    if (hours == null) die(`"${howLong}" is not a length of time — try 30m, 4h or 2d`);
     const s2 = await resolve(ref);
     const r = await api(`/v1/fleet/${encodeURIComponent(s2.id)}/snooze`, {
-      method: 'POST', body: JSON.stringify({ hours: Number(hours) }),
+      method: 'POST', body: JSON.stringify({ hours }),
     });
     const when = new Date(r.until).toLocaleTimeString();
-    console.log(`${C.dim}${s2.title}: alerts muted for ${r.hours}h, back at ${when}${C.off}`);
+    console.log(`${C.dim}${s2.title}: alerts muted for ${duration(r.hours * 3_600_000)}, back at ${when}${C.off}`);
+    if (r.capped) console.log(`${C.dim}capped at the ${r.hours}h maximum — an indefinite mute is how a session goes quiet forever${C.off}`);
     console.log(`${C.dim}it stays on the board — snooze silences, it does not hide${C.off}`);
     break;
   }
@@ -359,7 +365,7 @@ switch (command) {
       // Percentiles, not a mean: the failure this measures is a long tail, and
       // an average buries the one session that sat for a week.
       const row = (label, value, colour = C.ft) =>
-        console.log(`  ${C.dim}${label.padEnd(13)}${C.off}${colour}${ago(value).padStart(5)}${C.off}`);
+        console.log(`  ${C.dim}${label.padEnd(13)}${C.off}${colour}${duration(value).padStart(5)}${C.off}`);
       row('typical', t.p50, C.ok);
       row('slow 1 in 10', t.p90);
       row('worst', t.worst, t.worst > 86_400_000 ? C.ac : C.ft);
@@ -376,7 +382,7 @@ switch (command) {
     if (b.stillWaiting.length) {
       console.log(`\n${C.ac}Still waiting${C.off}`);
       for (const w of b.stillWaiting) {
-        console.log(`  ${C.ac}●${C.off} ${(w.title ?? w.sessionId.slice(0, 22)).padEnd(28)} ${C.dim}${ago(w.waitingMs)}${C.off}`);
+        console.log(`  ${C.ac}●${C.off} ${(w.title ?? w.sessionId.slice(0, 22)).padEnd(28)} ${C.dim}${duration(w.waitingMs)}${C.off}`);
       }
     }
 
@@ -386,7 +392,7 @@ switch (command) {
     console.log(`  ${C.dim}commands${C.off}  ${d.commandsQueued} queued · ${d.commandsSent} sent · ` +
       `${d.commandsFailed ? C.ac : C.ok}${d.commandsFailed} failed${C.off} ${C.dim}(${rate}%)${C.off}`);
     console.log(`  ${C.dim}polls${C.off}     ${d.pollOk} ok · ${d.pollFailed ? C.ac : C.dim}${d.pollFailed} failed${C.off}`);
-    console.log(`  ${C.dim}uptime    ${ago(m.uptimeMs)}${C.off}\n`);
+    console.log(`  ${C.dim}uptime    ${duration(m.uptimeMs)}${C.off}\n`);
     break;
   }
 
@@ -589,14 +595,14 @@ switch (command) {
 
     console.log(`\n${C.b}How Fleet tells you${C.off}`);
     console.log(`  ${C.dim}escalate    ${C.off}${n.escalate ? `${C.ok}on${C.off}` : 'off'}` +
-      `${n.escalate ? `${C.dim} — again after ${ago(n.escalateAfterMs)}, then once more, then never${C.off}` : ''}`);
+      `${n.escalate ? `${C.dim} — again after ${duration(n.escalateAfterMs)}, then once more, then never${C.off}` : ''}`);
     console.log(`  ${C.dim}quiet hours ${C.off}${n.quietHours ? `${hour(n.quietHours.from)}–${hour(n.quietHours.to)}${C.dim} — only a blocked session still buzzes${C.off}` : 'off'}`);
     console.log(`  ${C.dim}ceiling     ${n.maxPerHour}/hour · ${n.coalesceThreshold}+ at once arrive as one${C.off}`);
 
     if (n.escalating?.length) {
       console.log(`\n${C.ac}Escalating now${C.off}`);
       for (const e of n.escalating) {
-        const when = e.nextAt ? `next in ${ago(e.nextAt - Date.now())}` : 'done nagging';
+        const when = e.nextAt ? `next in ${duration(e.nextAt - Date.now())}` : 'done nagging';
         console.log(`  ${C.ac}●${C.off} ${(e.title ?? e.sessionId.slice(0, 22)).padEnd(28)} ${C.dim}alert ${e.attempt} · ${when}${C.off}`);
       }
     }
@@ -740,7 +746,7 @@ ${C.b}fleet${C.off} — one console for every Claude Code session
   fleet effort <ref> <level>  low | medium | high | xhigh | max
   fleet model <ref> <id>      e.g. claude-opus-5
   fleet compact <ref> [focus] free up context
-  fleet snooze <ref> [hours]  mute alerts (default 4h, max 72)
+  fleet snooze <ref> [30m|4h|2d]  mute alerts (default 4h, max 72)
   fleet wake <ref>            un-snooze
   fleet open <ref>            print the claude.ai URL
   fleet media                 what is playing on the laptop

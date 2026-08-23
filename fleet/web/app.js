@@ -411,6 +411,29 @@ function ago(ms) {
   return `${Math.round(hr / 24)}d`;
 }
 
+/**
+ * A length of time, as opposed to how long ago something was.
+ *
+ * `ago` collapses everything under a minute to "now", which is right for an
+ * age and wrong for a duration: a fleet that is working answers in seconds, so
+ * the headline metric rendered with `ago` reads "typical: now" — the best
+ * result the tool can produce, shown as if it were a placeholder.
+ */
+function duration(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '—';
+  if (ms < 0) return '—';
+  // Below the smallest unit it can name, and rounding 500ms up to "1s" while
+  // rounding 400ms down to nothing is the kind of seam a reader notices.
+  if (ms < 1000) return '<1s';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const hr = Math.round(m / 60);
+  if (hr < 48) return `${hr}h`;
+  return `${Math.round(hr / 24)}d`;
+}
+
 /** Debounced so a fast typist does not hit localStorage on every keystroke. */
 function saveDraft(sessionId, value) {
   if (value) state.drafts[sessionId] = value;
@@ -666,7 +689,7 @@ function sessionCard(s) {
     need ? `needs you: ${need}` : s.summary?.detail ?? 'no status reported',
     `idle ${ago(s.staleFor)}`,
     s.reachable ? null : (s.reachLabel ?? 'unreachable'),
-    s.snoozedUntil ? `alerts muted for ${ago(s.snoozedUntil - Date.now())}` : null,
+    s.snoozedUntil ? `alerts muted for ${duration(s.snoozedUntil - Date.now())}` : null,
     s.note ? `your note: ${s.note}` : null,
   ].filter(Boolean).join(', ');
 
@@ -684,11 +707,11 @@ function sessionCard(s) {
         h('div', { class: 'card-title' }, s.title),
         h('div', { class: 'card-sub' }, [s.repo, s.branch].filter(Boolean).join(' · ') || 'no repo')),
       h('span', { class: `age${s.staleFor > 86_400_000 ? ' hot' : ''}`, 'aria-hidden': 'true' },
-        s.snoozedUntil ? `⌁${ago(s.snoozedUntil - Date.now())}` : ago(s.staleFor))),
+        s.snoozedUntil ? `⌁${duration(s.snoozedUntil - Date.now())}` : ago(s.staleFor))),
 
     need
       ? h('div', { class: 'need', 'aria-hidden': 'true' },
-          h('div', { class: 'label' }, s.staleFor > 86_400_000 ? `Stalled ${ago(s.staleFor)}` : 'Needs you'),
+          h('div', { class: 'label' }, s.staleFor > 86_400_000 ? `Stalled ${duration(s.staleFor)}` : 'Needs you'),
           h('div', { class: 'body' }, need))
       : h('div', { class: 'detail', 'aria-hidden': 'true' }, s.summary?.detail ?? 'No status reported.'),
 
@@ -747,7 +770,7 @@ function viewBoard() {
     h('div', { class: 'sub' },
       h('span', {}, `${fleet.counts.active} active · ${age == null ? 'age unknown' : `${ago(age)} ago`}`),
       h('span', { class: 'grow' }),
-      rl?.resetsAt ? h('span', {}, `5h resets ${ago(rl.resetsAt - Date.now())}`) : null));
+      rl?.resetsAt ? h('span', {}, `5h resets ${duration(rl.resetsAt - Date.now())}`) : null));
 
   const banner = stale
     ? h('div', { class: 'banner' },
@@ -848,7 +871,7 @@ function viewSession() {
     h('div', { class: 'scroll' },
       s.summary?.needsAction
         ? h('div', { class: 'need', style: 'border:1px solid var(--acb);margin-bottom:14px' },
-            h('div', { class: 'label' }, `Needs you · idle ${ago(s.staleFor)}`),
+            h('div', { class: 'label' }, `Needs you · idle ${duration(s.staleFor)}`),
             h('div', { class: 'body' }, s.summary.needsAction))
         : null,
 
@@ -1051,7 +1074,7 @@ function describe(e) {
     // rather than watching it happen. "is blocked" would date a three-day
     // wait to whenever the daemon last restarted.
     'session.blocked': e.sinceStart ? `${title} has been waiting` : `${title} is blocked`,
-    'session.stalled': `${title} has been stuck ${ago(e.staleFor)}`,
+    'session.stalled': `${title} has been stuck ${duration(e.staleFor)}`,
     'session.reviewReady': `${title} is ready for review`,
     'session.started': `${title} started working`,
     'session.finished': `${title} finished its turn`,
@@ -1195,7 +1218,7 @@ function notifyRules() {
   return h('div', { style: 'margin-top:12px' },
     row('Escalate',
       n.escalate
-        ? `If you do not act, it tells you again after ${ago(n.escalateAfterMs)}, then once more. Three alerts, then it stops.`
+        ? `If you do not act, it tells you again after ${duration(n.escalateAfterMs)}, then once more. Three alerts, then it stops.`
         : 'One alert per blocked session, however long it waits.',
       toggle(n.escalate, () => set({ escalate: !n.escalate }), 'Escalate unanswered alerts')),
 
@@ -1243,7 +1266,7 @@ function statsCard() {
 
   const stat = (label, value, tone) =>
     h('div', { style: 'flex:1;min-width:0' },
-      h('div', { style: 'font-family:var(--mono);font-size:17px;font-weight:600;' + (tone ? `color:var(--${tone})` : '') }, ago(value)),
+      h('div', { style: 'font-family:var(--mono);font-size:17px;font-weight:600;' + (tone ? `color:var(--${tone})` : '') }, duration(value)),
       h('div', { style: 'font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ft);margin-top:2px' }, label));
 
   return h('div', { class: 'card' },
@@ -1260,7 +1283,7 @@ function statsCard() {
             h('div', { style: 'display:flex;gap:8px;align-items:center;font-size:12px;margin-top:4px' },
               h('span', { class: 'dot ac', 'aria-hidden': 'true' }),
               h('span', { style: 'flex-grow:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, w.title ?? w.sessionId.slice(0, 20)),
-              h('span', { style: 'font-family:var(--mono);font-size:10.5px;color:var(--ac)' }, ago(w.waitingMs)))))
+              h('span', { style: 'font-family:var(--mono);font-size:10.5px;color:var(--ac)' }, duration(w.waitingMs)))))
       : null,
     m.delivery.commandsFailed
       ? h('div', { class: 'detail', style: 'margin-top:10px;color:var(--ac);font-size:11.5px' },

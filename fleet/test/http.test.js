@@ -710,6 +710,31 @@ test('snoozing from the lock screen works and stops the escalation', async () =>
   }
 });
 
+test('a snooze length the server cannot read is refused, not defaulted', async () => {
+  // `body.hours ?? 4` only catches null and undefined, and JSON.stringify
+  // writes NaN as null — so a client that sent NaN got a four-hour mute and a
+  // 200. `fleet snooze 2 30m` did exactly that for as long as it existed.
+  const h = await harness({ withNotify: true });
+  try {
+    await h.poller.tick();
+    for (const hours of [null, '4h', NaN, {}, true]) {
+      const res = await h.call(`/v1/fleet/${encodeURIComponent(SESSION_ID)}/snooze`, {
+        method: 'POST', body: JSON.stringify({ hours }),
+      });
+      assert.equal(res.status, 400, `hours: ${JSON.stringify(hours)}`);
+      assert.equal(h.snoozeStore.isSnoozed(SESSION_ID), false, 'and nothing was muted');
+    }
+    // Omitting it entirely is still the documented default.
+    const ok = await h.call(`/v1/fleet/${encodeURIComponent(SESSION_ID)}/snooze`, {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).hours, 4);
+  } finally {
+    await h.cleanup();
+  }
+});
+
 test('a receipt records that a push actually reached a phone', async () => {
   // Everything else can only observe that a push service accepted a message.
   const metrics = new Metrics({ now: () => 0 });

@@ -193,6 +193,35 @@ test('escalation can be turned off entirely', () => {
   assert.deepEqual(p.due(), []);
 });
 
+test('a notification never says "1 minutes"', () => {
+  // A push notification is one line of text on a lock screen, and the reader
+  // has no other way to judge whether the thing asking for their attention is
+  // paying any itself. "has been waiting for 1 minutes" answers that question
+  // the wrong way.
+  for (const staleFor of [0, 1_000, 30_000, 60_000, 89_000]) {
+    const { title } = compose({ type: 'session.blocked', title: 'Importer rewrite', staleFor, sinceStart: true });
+    assert.doesNotMatch(title, /\b1 minutes\b/, `${staleFor}ms`);
+    assert.match(title, /waiting for a minute$/, `${staleFor}ms`);
+  }
+  assert.match(
+    compose({ type: 'session.blocked', title: 'Importer rewrite', staleFor: 120_000, sinceStart: true }).title,
+    /waiting for 2 minutes$/,
+  );
+});
+
+test('every scale of wait reads as something a person would say', () => {
+  const said = (staleFor) =>
+    compose({ type: 'session.blocked', title: 'X', staleFor, sinceStart: true }).title.replace('X has been waiting for ', '');
+  assert.equal(said(90 * 60_000), '2 hours');
+  assert.equal(said(3 * 3_600_000), '3 hours');
+  assert.equal(said(3 * 86_400_000), '3 days');
+  // No count of one survives anywhere in the range: the 90-minute and 48-hour
+  // boundaries mean the singular cases are only ever "a minute".
+  for (let ms = 0; ms < 6 * 86_400_000; ms += 97_000) {
+    assert.doesNotMatch(said(ms), /^1 /, `${ms}ms reads as "1 <unit>"`);
+  }
+});
+
 // ---------------------------------------------------------------- quiet hours
 
 test('quiet hours mute everything except a blocked session', () => {

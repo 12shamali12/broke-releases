@@ -130,6 +130,28 @@ test('a stall is described in the units a person thinks in', async () => {
   assert.match(h.for('s1')[0].text, /3 days/);
 });
 
+test('a stall shorter than an hour is not recorded as "0 hours"', async () => {
+  // The history line is read long after the fact, when the only thing left to
+  // judge it by is whether it sounds written by something paying attention.
+  // Rounding straight to hours produced "stuck 0 hours" under 30 minutes and
+  // "stuck 1 hours" at exactly one.
+  const poller = new EventEmitter();
+  const h = new HistoryStore({ now: () => 0 }).attach(poller);
+  const said = (staleFor, id) => {
+    poller.emit('event', { type: 'session.stalled', sessionId: id, at: 0, staleFor });
+    return h.for(id)[0].text;
+  };
+  assert.match(said(12 * 60_000, 'a'), /12 minutes/);
+  assert.match(said(60 * 60_000, 'b'), /an hour/);
+  assert.match(said(5 * 3_600_000, 'c'), /5 hours/);
+  assert.match(said(24 * 3_600_000, 'd'), /24 hours/);
+  assert.match(said(2 * 24 * 3_600_000, 'e'), /2 days/);
+  // Nothing in the whole range reads as a plural count of one.
+  for (let ms = 0, i = 0; ms < 6 * DAY; ms += 111_000, i++) {
+    assert.doesNotMatch(said(ms, `x${i}`), /\b1 (minutes|hours|days)\b/, `${ms}ms`);
+  }
+});
+
 test('history survives a restart', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'fleet-history-'));
   try {

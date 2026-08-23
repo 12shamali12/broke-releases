@@ -286,6 +286,17 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
       if (method === 'POST') {
         const body = await readJson(req);
         try {
+          // `?? 4` treated an explicit bad value as an omission, because
+          // JSON.stringify turns NaN into null: a client that sent garbage got
+          // a four-hour mute and a 200. Absent means default; present means it
+          // has to be a number.
+          // `?? 4` treated an explicit bad value as an omission, because
+          // JSON.stringify turns NaN into null: a client that sent garbage got
+          // a four-hour mute and a 200. Absent means default; present means it
+          // has to be a number.
+          if ('hours' in body && (body.hours === null || typeof body.hours !== 'number')) {
+            throw new HttpError(400, 'hours must be a number');
+          }
           const result = await snooze.snooze(sessionId, body.hours ?? 4);
           notify?.acknowledge(sessionId);
           history?.record(sessionId, 'you.snoozed', `${result.hours}h`);
