@@ -230,3 +230,36 @@ test('no client subscribes to an event the daemon never sends', async () => {
     assert.deepEqual(unknown, [], `${client} listens for events nothing sends: ${unknown.join(', ')}`);
   }
 });
+
+
+/**
+ * Every write a client can make has to leave a trace a person can read.
+ *
+ * `historyFor` mapped a verb to a history entry with a `default` branch
+ * producing `you.<verb>` — which is not in the phrasing table, so `record()`
+ * dropped it silently. Renaming a session left no trace at all, and any verb
+ * added later would have joined it without a word.
+ */
+test('every verb the API accepts is recorded in a session history', async () => {
+  const server = await readFile(join(ROOT, 'src/http/server.js'), 'utf8');
+  const history = await readFile(join(ROOT, 'src/history.js'), 'utf8');
+
+  const verbs = /const VERBS = new Set\(\[([^\]]+)\]\)/.exec(server);
+  assert.ok(verbs, 'the server declares its verbs');
+  const names = [...verbs[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]);
+  assert.ok(names.length >= 5, `expected the full verb set, got ${names.join(', ')}`);
+
+  const mapping = /export function historyFor\([\s\S]*?\n\}/.exec(server)[0];
+  const phrasing = new Set([...history.matchAll(/'(you\.[a-zA-Z]+)':/g)].map((m) => m[1]));
+
+  for (const verb of names) {
+    assert.match(
+      mapping, new RegExp(`case '${verb}':`),
+      `${verb} falls through to the default, which the history drops without a word`,
+    );
+  }
+  // And every type that mapping can produce must be one the history can say.
+  for (const m of mapping.matchAll(/'(you\.[a-zA-Z]+)'/g)) {
+    assert.ok(phrasing.has(m[1]), `historyFor produces ${m[1]}, which history.js cannot phrase`);
+  }
+});

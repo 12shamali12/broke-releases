@@ -83,6 +83,9 @@ const PHRASING = {
   'you.snoozed': (e) => ({ text: `You muted alerts for ${e.detail}`, tone: 'ft', actor: 'you' }),
   'you.woke': () => ({ text: 'You turned alerts back on', tone: 'ft', actor: 'you' }),
   'you.noted': () => ({ text: 'You wrote a note', tone: 'ft', actor: 'you' }),
+  // "Why is it called that" is exactly the question a history answers four
+  // days later, and renaming was the one action that left no trace at all.
+  'you.renamed': (e) => ({ text: e.detail ? `You renamed it to "${e.detail}"` : 'You renamed it', tone: 'ft', actor: 'you' }),
   // Recorded rather than erasing the send it undoes. A history that quietly
   // deletes what you changed your mind about is not an account of what
   // happened — and "you sent that, then pulled it back" is often the thing

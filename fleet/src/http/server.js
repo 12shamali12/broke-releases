@@ -49,7 +49,13 @@ export function historyFor(verb, payload = {}) {
     case 'model': return ['you.model', payload.model ?? null];
     case 'effort': return ['you.effort', payload.effort ?? null];
     case 'compact': return ['you.compact', null];
-    default: return [`you.${verb}`, null];
+    case 'rename': return ['you.renamed', payload.title ?? null];
+    // A verb with no case here produced `you.<verb>`, which is not in the
+    // history's phrasing table, so `record()` dropped it without a word. Any
+    // verb added later would silently stop being recorded. Null is at least
+    // a visible nothing — and a hygiene test now asserts every verb has a
+    // case, so this branch should be unreachable.
+    default: return [null, null];
   }
 }
 
