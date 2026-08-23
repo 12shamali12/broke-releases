@@ -19,6 +19,7 @@ const LS = {
   fleetAt: 'fleet.snapshotAt',
   epoch: 'fleet.epoch',
   drafts: 'fleet.drafts',
+  noteDrafts: 'fleet.noteDrafts',
 };
 
 /** localStorage throws in some private modes; never let that break the app. */
@@ -73,8 +74,16 @@ const state = {
   query: '',
   /** Narrows the board to one group. Null means everything. */
   tag: null,
-  /** Unsaved note text, per session, so a re-render cannot eat it. */
-  noteDrafts: {},
+  /**
+   * Unsaved note text, per session.
+   *
+   * On disk, not only in memory. The note is the only thing on any of these
+   * screens that a person wrote — everything else is derived and can be read
+   * again — and it was the one draft in the app that was not persisted. Typed
+   * while the laptop is unreachable it lived in a variable: close the tab, or
+   * let iOS evict a backgrounded page, and it was gone with nothing said.
+   */
+  noteDrafts: store.get(LS.noteDrafts, {}) ?? {},
   /** Per-session history, fetched when you open a session. */
   history: {},
   /** Ids already drawn on the board — anything absent gets the entrance. */
@@ -225,6 +234,10 @@ async function connect() {
   source.addEventListener('open', () => {
     state.connected = true;
     render();
+    // A note typed while the laptop was unreachable rides the reconnect, the
+    // way a queued command does.
+    flushOutbox().catch(() => {});
+    flushNotes().catch(() => {});
   });
 
   source.addEventListener('fleet.snapshot', (e) => setFleet(JSON.parse(e.data)));
@@ -324,6 +337,48 @@ async function dispatch(sessionId, verb, payload, label) {
     render();
     return null;
   }
+}
+
+/**
+ * Save a note, and keep the draft until the server actually has it.
+ *
+ * A failed save used to leave the text in memory and nothing else: no retry,
+ * no record, and — if the field never regained focus — no second attempt for
+ * the rest of the session. Notes now ride the same reconnect as queued
+ * commands.
+ */
+async function saveNote(sessionId, text) {
+  const session = state.fleet?.sessions?.find((s) => s.id === sessionId);
+  if (text === (session?.note ?? '')) {
+    delete state.noteDrafts[sessionId];
+    store.set(LS.noteDrafts, state.noteDrafts);
+    return true;
+  }
+  try {
+    await api(`/v1/fleet/${encodeURIComponent(sessionId)}/note`, {
+      method: 'PUT', body: JSON.stringify({ text }),
+    });
+    delete state.noteDrafts[sessionId];
+    store.set(LS.noteDrafts, state.noteDrafts);
+    await refresh();
+    return true;
+  } catch (err) {
+    // Kept, said out loud, and tried again on reconnect. Silence here is how
+    // someone finds out days later that the one thing they wrote is missing.
+    toast(`Note kept on this device — ${err.message}`);
+    return false;
+  }
+}
+
+/** Every note still waiting to reach the laptop. */
+async function flushNotes() {
+  const pending = Object.entries(state.noteDrafts);
+  if (!pending.length || !state.token) return;
+  let saved = 0;
+  for (const [sessionId, text] of pending) {
+    if (await saveNote(sessionId, text)) saved += 1;
+  }
+  if (saved) toast(`${saved} note${saved === 1 ? '' : 's'} saved`);
 }
 
 async function flushOutbox() {
@@ -957,19 +1012,12 @@ function viewSession() {
           placeholder: 'Why this exists, what you already tried, what you decided…',
           'aria-label': `Your note about ${s.title}`,
           style: 'min-height:64px',
-          oninput: () => { state.noteDrafts[s.id] = note.value; },
-          onblur: async () => {
-            // Saved on blur rather than per keystroke: this is prose, and a
-            // write per character would be a write per character.
-            if (note.value === (s.note ?? '')) return;
-            try {
-              await api(`/v1/fleet/${encodeURIComponent(s.id)}/note`, {
-                method: 'PUT', body: JSON.stringify({ text: note.value }),
-              });
-              delete state.noteDrafts[s.id];
-              await refresh();
-            } catch (err) { toast(err.message); }
-          },
+          // localStorage on every keystroke, the network on blur. The first
+          // costs nothing and is what stops a closed tab losing the note; the
+          // second is prose, and a write per character would be a write per
+          // character.
+          oninput: () => { state.noteDrafts[s.id] = note.value; store.set(LS.noteDrafts, state.noteDrafts); },
+          onblur: () => saveNote(s.id, note.value),
         });
         note.value = state.noteDrafts[s.id] ?? s.note ?? '';
         return h('div', { class: 'field' }, note);
@@ -1634,7 +1682,7 @@ if (state.token) {
 window.addEventListener('online', () => {
   state.online = true;
   connect();
-  refresh().then(flushOutbox).catch(() => {});
+  refresh().then(flushOutbox).then(flushNotes).catch(() => {});
   render();
 });
 /**
@@ -1667,7 +1715,7 @@ window.addEventListener('offline', () => {
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible' || !state.token) return;
-  refresh().then(flushOutbox).catch(() => {});
+  refresh().then(flushOutbox).then(flushNotes).catch(() => {});
 });
 
 // Keep the relative timestamps honest without a full re-render storm.

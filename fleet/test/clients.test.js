@@ -676,6 +676,51 @@ test('a modal with nothing in it still traps Tab', async () => {
   }
 });
 
+for (const client of CLIENTS) {
+  test(`${client.name}: the one thing a person wrote is never held only in memory`, async () => {
+    // Measured in a browser: kill the daemon, type a note, and localStorage
+    // held nothing — no note key, no draft key, nothing. The composer's draft
+    // was persisted; the note, which is the only text in the whole product a
+    // person authored rather than derived, was not. Close the tab or let iOS
+    // evict a backgrounded page and it was gone, silently.
+    const src = await read(client.js);
+    assert.match(src, /noteDrafts: 'fleet\.noteDrafts'/, 'a key of its own');
+    assert.match(src, /noteDrafts: store\.get\(LS\.noteDrafts/, 'restored at boot, like every other draft');
+
+    // Written on input, not only on save: a save that never happens is exactly
+    // the case this is for.
+    const oninput = /oninput: \(\) => \{ state\.noteDrafts\[s\.id\] = note\.value;[^}]*\}/.exec(src);
+    assert.ok(oninput, 'the note field records every keystroke');
+    assert.match(oninput[0], /store\.set\(LS\.noteDrafts/, 'and puts it somewhere that outlives the tab');
+  });
+}
+
+for (const client of CLIENTS) {
+  test(`${client.name}: a note that could not be saved is retried, not forgotten`, async () => {
+    // A failed save left the text in a variable and nothing else: no retry, no
+    // record, and if the field never regained focus, no second attempt for the
+    // rest of the session. It recovered in my test only because a re-render
+    // happened to fire blur again after the daemon came back — luck, not
+    // design.
+    const src = await read(client.js);
+    assert.match(src, /async function saveNote\(/, 'one saver, so the retry and the blur agree');
+    assert.match(src, /async function flushNotes\(/, 'and something that tries again');
+
+    // The draft survives a failure. Deleting it before the server confirms is
+    // the bug this is guarding.
+    const saver = src.slice(src.indexOf('async function saveNote('), src.indexOf('async function flushNotes('));
+    const ok = saver.indexOf('await api(');
+    const clear = saver.indexOf('delete state.noteDrafts', ok);
+    assert.ok(clear > ok, 'the draft is cleared only after the write succeeds');
+    assert.match(saver.slice(saver.indexOf('catch')), /toast\(/, 'and a failure is said out loud');
+
+    // Retried when the laptop comes back, on the same signal a queued command
+    // uses.
+    const open = src.slice(src.indexOf("addEventListener('open'"), src.indexOf("addEventListener('open'") + 400);
+    assert.match(open, /flushNotes\(\)/, 'the reconnect is what makes the retry happen');
+  });
+}
+
 test('both clients carry the same shared helpers', async () => {
   const missing = [];
   for (const client of CLIENTS) {
