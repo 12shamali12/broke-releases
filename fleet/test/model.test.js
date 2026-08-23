@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-import { bareModelId, compareForBoard, contextWindowFor, isReachable, normalizeFleet, normalizeSession } from '../src/model.js';
+import { bareModelId, compareForBoard, contextWindowFor, isReachable, normalizeFleet, normalizeSession, unreachableBecause, unreachableLabel } from '../src/model.js';
 
 const FIXTURE = fileURLToPath(new URL('../fixtures/fleet-series.json', import.meta.url));
 const [SNAPSHOT_A, SNAPSHOT_B] = JSON.parse(await readFile(FIXTURE, 'utf8'));
@@ -95,4 +95,45 @@ test('fleet rate limit takes the freshest reading, not the first', () => {
 
 test('a record without an id is rejected rather than silently dropped', () => {
   assert.throws(() => normalizeSession({ title: 'nope' }), TypeError);
+});
+
+// ---------------------------------------------------------------- reach label
+
+/**
+ * "Unreachable" was one word for three situations, and every client picked
+ * between them by regex-matching the long explanation. The day that sentence
+ * is reworded, three clients quietly start calling a live, watched session
+ * unreachable — so the distinction is a field.
+ */
+test('a session that can be watched but not messaged says exactly that', () => {
+  assert.equal(unreachableLabel({ envKind: 'local', connection: 'connected', status: 'idle', addressable: false }), 'watch only');
+});
+
+test('a disconnected bridge is temporary, and says a different word', () => {
+  // A message to this one waits and lands. A message to a watch-only session
+  // never arrives at all. Same badge for both would hide that.
+  assert.equal(unreachableLabel({ envKind: 'bridge', connection: 'disconnected', status: 'idle' }), 'disconnected');
+});
+
+test('an archived session is neither of those', () => {
+  assert.equal(unreachableLabel({ envKind: 'bridge', connection: 'connected', status: 'archived' }), 'archived');
+});
+
+test('a reachable session has no label to show', () => {
+  assert.equal(unreachableLabel({ envKind: 'bridge', connection: 'connected', status: 'idle' }), null);
+});
+
+test('the label and the explanation never disagree about being reachable', () => {
+  // They are computed separately and shown together; one saying "fine" while
+  // the other explains why it is not would be worse than either alone.
+  for (const args of [
+    { envKind: 'local', connection: 'connected', status: 'idle', addressable: false },
+    { envKind: 'bridge', connection: 'disconnected', status: 'idle' },
+    { envKind: 'bridge', connection: 'connected', status: 'archived' },
+    { envKind: 'bridge', connection: 'connected', status: 'idle' },
+  ]) {
+    const reachable = isReachable(args);
+    assert.equal(unreachableLabel(args) === null, reachable, JSON.stringify(args));
+    assert.equal(unreachableBecause(args) === null, reachable, JSON.stringify(args));
+  }
 });

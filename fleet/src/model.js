@@ -130,6 +130,28 @@ export function isReachable({ envKind, connection, status, addressable = true })
  * shrug. Getting this right is the difference between a dimmed button that
  * teaches you something and one that just frustrates.
  */
+/**
+ * The same three situations, in two words instead of thirty.
+ *
+ * A board has room for a badge, not a paragraph, and every client was
+ * deriving that badge by regex-matching the prose of `reachableReason` —
+ * which means the day that sentence is reworded, three clients quietly start
+ * calling a watch-only session "unreachable". They are different situations
+ * and they deserve different words:
+ *
+ *   watch only    alive and visible, but no write path exists. Permanent
+ *                 until you turn Remote Control on. A message would never
+ *                 arrive, so Fleet refuses it rather than queueing it.
+ *   disconnected  temporary. A message waits and lands when it comes back.
+ *   archived      over.
+ */
+export function unreachableLabel({ envKind, connection, status, addressable = true }) {
+  if (status === 'archived') return 'archived';
+  if (!addressable) return 'watch only';
+  if (envKind === 'bridge' && connection !== 'connected') return 'disconnected';
+  return null;
+}
+
 export function unreachableBecause({ envKind, connection, status, addressable = true }) {
   if (status === 'archived') return 'This session is archived.';
   if (!addressable) {
@@ -194,6 +216,8 @@ export function normalizeSession(raw, now = Date.now()) {
     reachable,
     /** Null when reachable; otherwise something worth reading. */
     reachableReason: reachable ? null : unreachableBecause(reachableArgs),
+    // Two words for a badge, so no client has to parse the sentence above.
+    reachLabel: reachable ? null : unreachableLabel(reachableArgs),
     /** Blocked *and* it told us what it wants. Drives notifications. */
     actionable: lane === 'blocked' && Boolean(summary.needsAction),
   };

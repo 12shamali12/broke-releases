@@ -476,7 +476,7 @@ function sessionCard(s) {
     s.title,
     need ? `needs you: ${need}` : s.summary?.detail ?? 'no status reported',
     `idle ${ago(s.staleFor)}`,
-    s.reachable ? null : 'unreachable',
+    s.reachable ? null : (s.reachLabel ?? 'unreachable'),
     s.snoozedUntil ? `alerts muted for ${ago(s.snoozedUntil - Date.now())}` : null,
     s.note ? `your note: ${s.note}` : null,
   ].filter(Boolean).join(', ');
@@ -521,7 +521,9 @@ function sessionCard(s) {
       h('span', {}, '·'),
       h('span', {}, s.effort ?? '—'),
       h('div', { class: `meter${pct >= 70 ? ' hot' : ''}` }, h('i', { style: `width:${pct}%` })),
-      h('span', {}, s.reachable ? '' : 'unreachable')));
+      // "watch only" and "disconnected" call for different responses, so the
+      // card says which one it is rather than shrugging the same word at both.
+      h('span', {}, s.reachable ? '' : (s.reachLabel ?? 'unreachable'))));
 }
 
 function viewBoard() {

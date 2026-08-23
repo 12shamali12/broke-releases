@@ -141,12 +141,11 @@ function printBoard(fleet, { lane = null } = {}) {
     const meta = `${C.dim}${(s.modelId ?? '?').replace('claude-', '').padEnd(12)}${ago(s.staleFor).padStart(4)}${C.off}`;
     // Two different situations, two different words. "Disconnected" is
     // temporary and a message waits; "watch only" is permanent until you turn
-    // Remote Control on, and a message would never arrive.
-    const flag = s.reachable
-      ? ''
-      : / cloud session id/.test(s.reachableReason ?? '')
-        ? ` ${C.dim}[watch only]${C.off}`
-        : ` ${C.dim}[unreachable]${C.off}`;
+    // Remote Control on, and a message would never arrive. The distinction is
+    // a field rather than a regex over the long explanation, because three
+    // clients matching prose means three clients that break when it is
+    // reworded.
+    const flag = s.reachable ? '' : ` ${C.dim}[${s.reachLabel ?? 'unreachable'}]${C.off}`;
     const muted = s.snoozedUntil ? ` ${C.dim}[snoozed ${ago(s.snoozedUntil - Date.now())}]${C.off}` : '';
     console.log(` ${index} ${colour}${LANE_MARK[s.lane] ?? '·'}${C.off} ${title}  ${meta}${flag}${muted}`);
     if (s.summary?.needsAction) {

@@ -93,6 +93,10 @@ for (const client of CLIENTS) {
     const stops = [];
     for (const site of callSites(src, ['div', 'span', 'button'])) {
       if (!site.attrs.includes('aria-disabled')) continue;
+      // An option in a listbox is never a tab stop to begin with — the
+      // listbox or its combobox owns the focus and moves between options — so
+      // it has no tabindex to set to -1.
+      if (/role:\s*'option'/.test(site.attrs)) continue;
       if (!/tabindex/.test(site.attrs)) stops.push(site.attrs.trim().slice(0, 60));
     }
     assert.deepEqual(stops, [], 'aria-disabled must come with tabindex -1');
@@ -266,3 +270,40 @@ for (const client of CLIENTS) {
     assert.match(rule[1], /height:/);
   });
 }
+
+for (const client of CLIENTS) {
+  test(`${client.name}: the reach badge comes from the field, not from the prose`, async () => {
+    // The CLI used to pick between "watch only" and "unreachable" by running
+    // a regex over `reachableReason`. That works until the sentence is
+    // reworded, at which point every client that copied the trick quietly
+    // starts calling a live, watched session unreachable.
+    const src = await read(client.js);
+    assert.doesNotMatch(src, /test\(\s*s\.reachableReason/, 'do not match on the explanation — read reachLabel');
+    assert.doesNotMatch(src, /reachableReason\s*\)?\s*\.(match|includes|indexOf)/);
+    // And where a bare word is still used, it must be the fallback, not the
+    // whole answer.
+    for (const bare of src.matchAll(/: 'unreachable'/g)) {
+      const before = src.slice(Math.max(0, bare.index - 60), bare.index);
+      assert.match(before, /reachLabel \?\?/, 'a hard-coded "unreachable" with no reachLabel in front of it');
+    }
+  });
+}
+
+test('the palette never offers what the panel beside it says is impossible', async () => {
+  // A write to a watch-only session is refused, not queued. The session panel
+  // already dims Stop, Change model, Change effort and Compact; the command
+  // palette offered all four anyway, so the two halves of one screen
+  // disagreed about what was possible.
+  const src = await read('web-cockpit/cockpit.js');
+  const items = /function paletteItems\(\)[\s\S]*?\n\}/.exec(src);
+  assert.ok(items, 'the palette builds its own list');
+  const body = items[0];
+  for (const verb of ['effort', 'model', 'compact']) {
+    const line = new RegExp(`dispatch\\(s\\.id, '${verb}'`);
+    const match = line.exec(body);
+    assert.ok(match, `the palette dispatches ${verb}`);
+    const before = body.slice(Math.max(0, match.index - 40), match.index);
+    assert.match(before, /if \(writable\)/, `${verb} must not be dispatched to a session that cannot receive it`);
+  }
+  assert.match(body, /disabled: !writable/, 'and it must look unavailable, not merely do nothing');
+});

@@ -558,24 +558,31 @@ function paletteItems() {
     rows.push({
       group: 'Sessions', glyph: '●', tone: laneDot(session),
       title: session.title,
-      sub: [session.repo, session.branch, session.reachable ? session.lane : 'unreachable'].filter(Boolean).join(' · '),
+      sub: [session.repo, session.branch, session.reachable ? session.lane : (session.reachLabel ?? 'unreachable')].filter(Boolean).join(' · '),
       run: () => { state.selected = session.id; closeOverlay(); },
     });
   }
 
   if (s) {
+    // A write to a watch-only session is refused, not queued — there is no
+    // path for it to arrive on. The panel beside this palette already dims
+    // exactly these actions; offering them here anyway meant the two halves
+    // of the same screen disagreed about what was possible.
+    const writable = s.reachable;
+    const why = s.reachLabel ?? 'unreachable';
+
     for (const eff of EFFORTS) {
       rows.push({
-        group: 'This session', glyph: '⚙', tone: 'ac',
-        title: `Set effort to ${eff}`, sub: `currently ${s.effort ?? '—'}`,
-        run: () => { dispatch(s.id, 'effort', { effort: eff }); closeOverlay(); },
+        group: 'This session', glyph: '⚙', tone: writable ? 'ac' : 'ft', disabled: !writable,
+        title: `Set effort to ${eff}`, sub: writable ? `currently ${s.effort ?? '—'}` : why,
+        run: () => { if (writable) dispatch(s.id, 'effort', { effort: eff }); closeOverlay(); },
       });
     }
     for (const [id, name, ctx] of MODELS) {
       rows.push({
-        group: 'This session', glyph: '◆', tone: 'ac',
-        title: `Switch to ${name}`, sub: `${ctx} context`,
-        run: () => { dispatch(s.id, 'model', { model: id }); closeOverlay(); },
+        group: 'This session', glyph: '◆', tone: writable ? 'ac' : 'ft', disabled: !writable,
+        title: `Switch to ${name}`, sub: writable ? `${ctx} context` : why,
+        run: () => { if (writable) dispatch(s.id, 'model', { model: id }); closeOverlay(); },
       });
     }
     rows.push({
@@ -585,8 +592,9 @@ function paletteItems() {
       run: () => { snoozeSession(s); closeOverlay(); },
     });
     rows.push({
-      group: 'This session', glyph: '↯', tone: 'ac', title: 'Compact the context', sub: 'summarise history',
-      run: () => { dispatch(s.id, 'compact', {}); closeOverlay(); },
+      group: 'This session', glyph: '↯', tone: writable ? 'ac' : 'ft', disabled: !writable,
+      title: 'Compact the context', sub: writable ? 'summarise history' : why,
+      run: () => { if (writable) dispatch(s.id, 'compact', {}); closeOverlay(); },
     });
   }
 
@@ -800,7 +808,7 @@ function railRow(s, index) {
     id: `rail-${s.id}`,
     tabindex: selected ? '0' : '-1',
     'aria-selected': String(selected),
-    'aria-label': `${index}. ${s.title}, ${s.reachable ? s.lane : 'unreachable'}, idle ${ago(s.staleFor)}${
+    'aria-label': `${index}. ${s.title}, ${s.reachable ? s.lane : (s.reachLabel ?? 'unreachable')}, idle ${ago(s.staleFor)}${
       s.summary?.needsAction ? `, needs you: ${s.summary.needsAction}` : ''}`,
   }, () => { state.selected = s.id; state.menu = null; render(); }),
     h('span', { class: `dot ${laneDot(s)}`, 'aria-hidden': 'true' }),
@@ -923,7 +931,10 @@ function transcript(s) {
     lines.push(['dim', '']);
   }
   if (!s.reachable) {
-    lines.push(['warn', '— unreachable: only the machine hosting this session can revive it —']);
+    // The real reason, not a guess at it: "only the machine hosting this
+    // session can revive it" is true of a disconnected bridge and false of a
+    // watch-only local session, which is alive and being read right now.
+    lines.push(['warn', `— ${s.reachLabel ?? 'unreachable'}: ${s.reachableReason ?? 'this session cannot be messaged'} —`]);
   }
 
   return h('div', { class: 'term' },
@@ -1063,7 +1074,7 @@ function wall() {
       active().map((s) =>
         h('div', pressable({
           class: `tile ${s.lane}${s.reachable ? '' : ' dead'}`,
-          'aria-label': `${s.title}, ${s.reachable ? s.lane : 'unreachable'}${
+          'aria-label': `${s.title}, ${s.reachable ? s.lane : (s.reachLabel ?? 'unreachable')}${
             s.summary?.needsAction ? `, needs you: ${s.summary.needsAction}` : ''}`,
         }, () => { state.selected = s.id; state.view = 'cockpit'; render(); }),
           h('div', { class: 'th' },
@@ -1072,11 +1083,22 @@ function wall() {
             h('span', { style: 'font-family:var(--mono);font-size:10px;color:var(--ft)' }, ago(s.staleFor))),
           h('div', { class: 'tb' },
             h('div', { class: 'tool' }, `● ${s.repo ?? 'no repo'}`),
-            h('div', { class: 'body' }, s.summary.detail ?? 'No status reported.'),
+            // When a session's last words ARE the question it is waiting on —
+            // which is every session read from a transcript — printing the
+            // status and then the ask renders the same sentence twice, once
+            // plain and once with an arrow in front of it. It looks like a
+            // bug because it is one.
+            s.summary.detail && s.summary.detail !== s.summary.needsAction
+              ? h('div', { class: 'body' }, s.summary.detail)
+              : s.summary.needsAction ? null : h('div', { class: 'body' }, 'No status reported.'),
             s.summary.needsAction ? h('div', { class: 'warn' }, `→ ${s.summary.needsAction}`) : null),
           h('div', { class: 'tf', style: 'display:flex;align-items:center;gap:8px' },
-            h('span', { style: `font-size:10.5px;font-weight:600;color:var(--${s.lane === 'blocked' ? 'ac' : s.lane === 'ready' ? 'ok' : 'wk'})` },
-              s.reachable ? s.lane : 'unreachable'),
+            // The lane's colour with the lane's word, or neither. Colouring
+            // "watch only" green because the session happens to be in the
+            // ready lane says two different things at once.
+            h('span', { style: `font-size:10.5px;font-weight:600;color:var(--${
+              !s.reachable ? 'ft' : s.lane === 'blocked' ? 'ac' : s.lane === 'ready' ? 'ok' : 'wk'})` },
+              s.reachable ? s.lane : (s.reachLabel ?? 'unreachable')),
             h('span', { class: 'grow' }),
             h('span', { style: 'font-family:var(--mono);font-size:9.5px;color:var(--ft)' }, short(s.modelId)))))));
 }
@@ -1120,8 +1142,9 @@ function paletteOverlay() {
               h('div', { class: 'sec', role: 'presentation' }, h('span', { class: 't' }, g.name), h('span', { class: 'line' })),
               g.rows.map((r) =>
                 h('div', {
-                  class: 'hit', id: `hit-${r.i}`, role: 'option',
+                  class: `hit${r.disabled ? ' off' : ''}`, id: `hit-${r.i}`, role: 'option',
                   'aria-selected': String(r.i === state.paletteIndex),
+                  'aria-disabled': r.disabled ? 'true' : null,
                   'aria-label': `${r.title}. ${r.sub}`,
                   onmouseenter: () => { state.paletteIndex = r.i; render(); },
                   onclick: () => r.run(),

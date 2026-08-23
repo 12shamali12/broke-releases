@@ -308,6 +308,11 @@ body {
 .palette .hit .nm { font-size: 13.5px; font-weight: 500; color: var(--dm); }
 .palette .hit[aria-selected="true"] .nm { font-weight: 600; color: var(--tx); }
 .palette .hit .sb { font-size: 11px; color: var(--ft); margin-top: 2px; }
+/* An action with nowhere to arrive. Shown rather than hidden, because "why is
+   Compact missing" is a worse question than "why is Compact greyed out" — and
+   its subtitle answers the second one. */
+.palette .hit.off { opacity: .42; }
+.palette .hit.off .nm { text-decoration: line-through; text-decoration-thickness: 1px; }
 .palette .foot {
   display: flex; align-items: center; gap: 16px; padding: 10px 17px;
   border-top: 1px solid var(--bd); background: var(--s2); font-size: 11px; color: var(--ft);
