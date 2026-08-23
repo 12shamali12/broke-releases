@@ -180,17 +180,67 @@ async function write(ref, verb, payload, label) {
 }
 
 /** Live tail. SSE without a library: parse the frames off the byte stream. */
+/**
+ * Live tail of transitions, which has to survive fleetd going away.
+ *
+ * It did not. The read loop ended when the connection dropped and the process
+ * exited without a word — you leave `fleet watch` running in a terminal, fleetd
+ * restarts for an upgrade, and your tail is dead with its last line looking
+ * like the newest thing that ever happened.
+ *
+ * So: reconnect with backoff, say so, and resume from the cursor. Event ids
+ * restart at 1 on every fleetd start, so a cursor from the previous run is
+ * dropped when the epoch changes — otherwise the resume asks for everything
+ * after id 6 and a fresh log ending at 6 answers "nothing".
+ */
 async function watch() {
   const auth = await token();
-  const res = await fetch(`${BASE}/v1/stream`, { headers: { authorization: `Bearer ${auth}` } }).catch(() =>
-    die(`cannot reach fleetd at ${BASE}`),
-  );
-  if (!res.ok) die(`stream failed: ${res.status}`);
-
   console.log(`${C.dim}watching ${BASE} — ctrl-c to stop${C.off}\n`);
 
+  let cursor = 0;
+  let epoch = null;
+  let attempt = 0;
+  let announced = true;
+
+  for (;;) {
+    let res;
+    try {
+      res = await fetch(`${BASE}/v1/stream?since=${cursor}`, { headers: { authorization: `Bearer ${auth}` } });
+    } catch {
+      res = null;
+    }
+
+    if (!res?.ok) {
+      // 401 will not fix itself by waiting, and neither will a revoked token.
+      if (res && res.status === 401) die('this token was revoked — run: fleet pair <code>');
+      if (announced) {
+        console.log(`${C.dim}— fleetd is not answering; reconnecting —${C.off}`);
+        announced = false;
+      }
+      attempt += 1;
+      await sleep(backoff(attempt));
+      continue;
+    }
+
+    if (!announced) {
+      console.log(`${C.dim}— reconnected —${C.off}`);
+      announced = true;
+    }
+    attempt = 0;
+
+    ({ cursor, epoch } = await readStream(res, { cursor, epoch }));
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** 1s, 2s, 4s, 8s, then every 15s. Fast enough to catch a restart. */
+const backoff = (attempt) => Math.min(15_000, 1000 * 2 ** (attempt - 1));
+
+/** Print frames until the connection ends. Returns where to resume from. */
+async function readStream(res, { cursor, epoch }) {
   const decoder = new TextDecoder();
   let buffer = '';
+
   for await (const chunk of res.body) {
     buffer += decoder.decode(chunk, { stream: true });
     const frames = buffer.split('\n\n');
@@ -198,9 +248,9 @@ async function watch() {
 
     for (const frame of frames) {
       const event = /^event: (.+)$/m.exec(frame)?.[1];
+      const id = /^id: (\d+)$/m.exec(frame)?.[1];
       const data = frame.split('\n').filter((l) => l.startsWith('data: ')).map((l) => l.slice(6)).join('\n');
       if (!event || !data) continue;
-      if (event === 'fleet.snapshot') continue;
 
       let parsed;
       try {
@@ -208,6 +258,20 @@ async function watch() {
       } catch {
         continue;
       }
+
+      if (event === 'fleet.snapshot') {
+        // The snapshot carries which run of the daemon these ids belong to.
+        if (parsed.epoch && epoch && parsed.epoch !== epoch) cursor = 0;
+        epoch = parsed.epoch ?? epoch;
+        continue;
+      }
+      if (event === 'stream.gap') {
+        console.log(`${C.dim}— ${parsed.reset ? 'fleetd restarted; ids start over' : 'some events aged out before we reconnected'} —${C.off}`);
+        if (parsed.reset) cursor = 0;
+        continue;
+      }
+
+      if (id) cursor = Number(id);
       const colour = parsed.severity === 'push' ? C.ac : parsed.severity === 'badge' ? C.ok : C.dim;
       const time = new Date(parsed.at ?? Date.now()).toLocaleTimeString();
       const extra = parsed.needsAction ?? parsed.error ?? '';
@@ -217,6 +281,8 @@ async function watch() {
       );
     }
   }
+
+  return { cursor, epoch };
 }
 
 const [command = 'ls', ...rest] = process.argv.slice(2);
