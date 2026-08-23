@@ -320,3 +320,34 @@ for (const client of CLIENTS) {
     assert.match(css, /\.meter\.unknown/);
   });
 }
+
+for (const client of CLIENTS) {
+  test(`${client.name}: the composer never promises delivery it cannot make`, async () => {
+    // "Queued until this session reconnects" is true of a disconnected bridge
+    // and a lie to a watch-only session, whose message is refused outright —
+    // there is no write path for it to wait on. Typing into a box that
+    // promises delivery and then getting a 409 is the failure this whole
+    // codebase is organised around not causing.
+    const src = await read(client.js);
+    assert.match(src, /function composerHint/, 'the hint must depend on why it is unreachable');
+    const fn = /function composerHint\(s\)[\s\S]*?\n\}/.exec(src)[0];
+    assert.match(fn, /watch only/, 'watch-only is the case that must not be promised a queue');
+    const queued = /Queued until this session reconnects/.exec(fn);
+    assert.ok(queued, 'a disconnected session really is queued, and should still say so');
+    assert.ok(fn.indexOf("'watch only'") < queued.index, 'watch-only must be answered before the queue promise');
+  });
+}
+
+test('the cockpit never leaves a write action live on a session that refuses writes', async () => {
+  // Stop was gated on `status !== 'running'` alone, so a running watch-only
+  // session showed a live Stop button beside four dimmed siblings — and
+  // pressing it produced a refusal from the server.
+  const src = await read('web-cockpit/cockpit.js');
+  const list = /const actions = \[[\s\S]*?\n  \];/.exec(src);
+  assert.ok(list, 'the panel builds an action list');
+  for (const [label, verb] of [['Stop', 'send'], ['Change model', 'model'], ['Change effort', 'effort'], ['Compact', 'compact']]) {
+    const row = new RegExp(`\\['${label.replace(/[.*+?^$()|[\\]\\\\]/g, '\\\\$&')}',[^\\n]*`).exec(list[0]);
+    assert.ok(row, `${label} is in the list`);
+    assert.match(row[0], /!s\.reachable|reachLabel/, `${label} must be gated on reachability, not only on status (${verb})`);
+  }
+});

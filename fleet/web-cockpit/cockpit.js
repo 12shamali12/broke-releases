@@ -924,6 +924,9 @@ function effortMenu(s) {
  * does have is each session's own status line plus every transition it has
  * observed, and showing that honestly beats faking a terminal.
  */
+/** "watch only" as a label, "Watch only" as a heading. */
+const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
 function transcript(s) {
   const mine = state.events.filter((e) => e.sessionId === s.id);
   const lines = [];
@@ -932,7 +935,10 @@ function transcript(s) {
   lines.push(['dim', `${s.repo ?? 'no repo'} · ${s.branch ?? 'no branch'} · ${s.envKind ?? '?'} · ${short(s.modelId)} · ${s.effort ?? '—'}`]);
   lines.push(['dim', '']);
 
-  if (s.summary.detail) {
+  // A session read from a transcript has `detail === needsAction`, because the
+  // last thing it said IS the question it is waiting on. Printing both put the
+  // same sentence on screen twice under two different headings.
+  if (s.summary.detail && s.summary.detail !== s.summary.needsAction) {
     lines.push(['tool', '● last status']);
     lines.push(['body', `  ${s.summary.detail}`]);
     lines.push(['dim', '']);
@@ -962,9 +968,25 @@ function transcript(s) {
     s.status === 'running' ? h('div', { class: 'l' }, h('span', { class: 'caret' }, ' ')) : null);
 }
 
+/**
+ * What the composer promises, which must be something Fleet will actually do.
+ *
+ * "Queued until this session reconnects" is true of a disconnected bridge and
+ * a lie to a watch-only session: that message is refused outright, because
+ * there is no write path for it to wait on. Typing into a box that promises
+ * delivery and then being told 409 is the exact failure this codebase treats
+ * as unacceptable — a message you believed you sent that never went.
+ */
+function composerHint(s) {
+  if (s.reachable) return `Message ${s.title}…`;
+  if (s.reachLabel === 'watch only') return 'Cannot be messaged — turn on Remote Control in this session first';
+  if (s.reachLabel === 'archived') return 'This session is archived.';
+  return 'Queued until this session reconnects…';
+}
+
 function composer(s) {
   const box = h('textarea', {
-    id: 'composer', rows: '1', placeholder: s.reachable ? `Message ${s.title}…` : 'Queued until this session reconnects…',
+    id: 'composer', rows: '1', placeholder: composerHint(s),
     oninput: (e) => {
       // Held in state, not only in the DOM: a live event can re-render this
       // pane at any moment, and losing a half-written message to a background
@@ -1020,8 +1042,14 @@ function panel(s) {
   note.value = state.noteDrafts[s.id] ?? s.note ?? '';
 
   const actions = [
-    ['Send message', '⌘⏎', () => document.getElementById('composer')?.focus(), false],
-    ['Stop', 'esc', () => dispatch(s.id, 'send', { text: '/stop' }), s.status !== 'running'],
+    // Sending to a merely disconnected session works — it queues and lands.
+    // Sending to a watch-only one is refused, so the action is shown as what
+    // it is rather than left looking available beside four dimmed siblings.
+    ['Send message', '⌘⏎', () => document.getElementById('composer')?.focus(), s.reachLabel === 'watch only'],
+    // A running session you cannot write to still cannot be stopped. Without
+    // the reachability half this was live on every running watch-only
+    // session, and pressing it produced a refusal from the server.
+    ['Stop', 'esc', () => dispatch(s.id, 'send', { text: '/stop' }), s.status !== 'running' || !s.reachable],
     ['Change model', '⌘M', () => { state.menu = 'model'; render(); }, !s.reachable],
     ['Change effort', '⌘E', () => { state.menu = 'effort'; render(); }, !s.reachable],
     ['Compact', '⌘⇧C', () => dispatch(s.id, 'compact', {}), !s.reachable],
@@ -1034,7 +1062,11 @@ function panel(s) {
     h('div', { class: 'need', style: `background:color-mix(in srgb, var(--${tone}) 8%, transparent)` },
       h('div', { class: 'lbl', style: `color:var(--${tone})` },
         svg('<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/>', 'ico'),
-        !s.reachable ? 'Unreachable' : s.lane === 'blocked' ? 'Needs you' : s.lane === 'ready' ? 'Ready for review' : 'Running'),
+        // The same word the rail, the wall and the palette use. This banner
+        // said "Unreachable" while every other surface said "watch only",
+        // about the same session, on the same screen.
+        !s.reachable ? sentence(s.reachLabel ?? 'unreachable')
+          : s.lane === 'blocked' ? 'Needs you' : s.lane === 'ready' ? 'Ready for review' : 'Running'),
       h('div', { class: 'txt' },
         s.summary.needsAction ?? s.summary.detail ??
           (s.reachable ? 'No status reported yet.' : s.reachableReason ?? 'It cannot be reached right now.')),
@@ -1042,7 +1074,10 @@ function panel(s) {
         class: 'cta',
         style: s.reachable ? `background:var(--${tone});color:var(--onac)` : 'background:var(--s2);color:var(--ft);border:1px solid var(--bd)',
         onclick: () => document.getElementById('composer')?.focus(),
-      }, s.reachable ? 'Reply' : 'Queue a message')),
+        // Nothing is queued for a watch-only session — it is refused. The
+        // button still focuses the composer, whose placeholder explains why,
+        // rather than promising a delivery that will not happen.
+      }, s.reachable ? 'Reply' : s.reachLabel === 'watch only' ? 'Why not?' : 'Queue a message')),
 
     h('div', { class: 'sect' },
       h('div', { class: 'h' }, 'Budget'),

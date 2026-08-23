@@ -427,6 +427,19 @@ function deviceLabel() {
  * `known: false` renders an empty striped track and the word "unknown", which
  * is true and is also the thing that will prompt someone to fix the adapter.
  */
+/**
+ * What the composer promises, which must be something Fleet will actually do.
+ *
+ * A watch-only session refuses a message rather than queueing it, so a box
+ * that says "message this session" is offering something that cannot happen.
+ */
+function composerHint(s) {
+  if (s.reachable) return 'Message this session…';
+  if (s.reachLabel === 'watch only') return 'Cannot be messaged — turn on Remote Control here first';
+  if (s.reachLabel === 'archived') return 'This session is archived.';
+  return 'Queued until this session reconnects…';
+}
+
 function contextFill(s) {
   const used = s.contextUsed;
   if (!s.contextMax || !Number.isFinite(used)) {
@@ -629,7 +642,7 @@ function viewSession() {
 
   const text = h('textarea', {
     id: 'compose',
-    placeholder: 'Message this session…',
+    placeholder: composerHint(s),
     'aria-label': `Message ${s.title}`,
     oninput: () => saveDraft(s.id, text.value),
   });
