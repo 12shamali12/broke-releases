@@ -503,6 +503,56 @@ for (const client of CLIENTS) {
   });
 }
 
+for (const client of CLIENTS) {
+  test(`${client.name}: "offline" is a claim about the board, not about the socket`, async () => {
+    // Watched in a browser: three seconds after fleetd was killed the cockpit
+    // said "offline" over a board three seconds old. The phone had already
+    // learned this — "That is a claim about the connection, and it was false"
+    // is a comment in its own header — and the cockpit had not.
+    //
+    // Three states: live, reconnecting (the stream is gone, the board is still
+    // current), offline (the board is genuinely old). Plus a fourth cause that
+    // is neither: fleetd answering every request and reporting that IT cannot
+    // read the fleet, where nothing is offline and the fix is on the laptop.
+    const src = await read(client.js);
+    assert.match(src, /reconnecting/, 'the middle state has to exist');
+    assert.match(src, /not reading/, 'and the fleetd-cannot-read state has to be nameable');
+
+    // The offline decision must consult the age. Pinning the expression is
+    // crude, but the alternative is a browser and four minutes of waiting.
+    const decision = /const unreachable = [^;]+;/.exec(src);
+    assert.ok(decision, 'the two are decided in one named place');
+    assert.match(decision[0], /age/, 'offline means the board is old, not that the socket dropped');
+    assert.match(decision[0], /60_000|60000/, 'with a grace period a blip does not exceed');
+  });
+}
+
+for (const client of CLIENTS) {
+  test(`${client.name}: a stale board never keeps a live badge`, async () => {
+    // The honesty property the whole product rests on: old state must never be
+    // presented as current. `health.stale` is fleetd telling you its own reads
+    // are failing — the client is connected, and the board is still wrong.
+    const src = await read(client.js);
+    assert.match(src, /health\?\.stale/, 'the daemon says so and the client has to read it');
+    const notReading = /const notReading = [^;]+;/.exec(src);
+    assert.ok(notReading, 'named, so it can be told apart from an unreachable daemon');
+    assert.match(notReading[0], /health\?\.stale/);
+    const stale = /const stale = [^;]+;/.exec(src);
+    assert.ok(stale, 'and staleness is either cause');
+    assert.match(stale[0], /notReading/);
+    assert.match(stale[0], /unreachable/);
+
+    // And when fleetd is the stale thing, the age shown must be fleetd's own
+    // read age. This client fetched its board seconds ago, so its own number
+    // says "just now" over data forty minutes old — the exact false
+    // reassurance the banner exists to refuse. Seen in a browser: "Showing the
+    // board from just now" above "it cannot read the fleet".
+    const readAge = /const readAge = [^;]+;/.exec(src);
+    assert.ok(readAge, 'the daemon reports how long since its last good read');
+    assert.match(readAge[0], /health\?\.ageMs/);
+  });
+}
+
 test('both clients carry the same shared helpers', async () => {
   const missing = [];
   for (const client of CLIENTS) {

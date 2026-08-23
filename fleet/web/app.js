@@ -472,7 +472,26 @@ function staleness() {
   // An unknown age is not evidence of freshness. Requiring `age != null` here
   // meant a restored board with no timestamp — the exact case this exists for
   // — was reported as live.
-  return { stale: Boolean(health?.stale) || (offline && (age == null || age > 60_000)), age, offline };
+  const unreachable = offline && (age == null || age > 60_000);
+  // Two different things go wrong and they need different sentences. "Your
+  // laptop cannot be reached" is false when fleetd is answering every request
+  // and telling you that IT cannot read the fleet — and that is the case where
+  // the fix is on the laptop, not on the phone. Unreachable wins when both
+  // look true, because `health` is then itself part of the stale board.
+  const notReading = Boolean(health?.stale);
+  const stale = unreachable || notReading;
+  // When fleetd is the stale thing, the age that matters is how long since IT
+  // last read the fleet. This phone's own fetch is seconds old and says
+  // nothing: "showing the board from just now" over data fleetd last managed
+  // to read forty minutes ago is the exact false reassurance this screen is
+  // built to refuse.
+  const readAge = notReading && Number.isFinite(health?.ageMs) ? health.ageMs : null;
+  return {
+    stale,
+    age: readAge ?? age,
+    offline,
+    reason: unreachable ? 'offline' : notReading ? 'not reading' : null,
+  };
 }
 
 function go(view, selected = null) {
@@ -755,7 +774,7 @@ function viewBoard() {
   // A tag filter narrows whatever lane you are in, rather than replacing it:
   // "blocked, in the importer work" is the question people actually have.
   const shown = state.tag ? byLane.filter((s) => s.tags?.includes(state.tag)) : byLane;
-  const { stale, age, offline } = staleness();
+  const { stale, age, offline, reason } = staleness();
   const rl = fleet.rateLimit;
 
   const head = h('div', { class: 'head' },
@@ -767,10 +786,10 @@ function viewBoard() {
       // displayed a green dot and the word live. That is a claim about the
       // connection, and it was false. "live" now means the stream is actually
       // connected; anything else says what it is.
-      offline
+      stale || offline
         ? h('span', { class: `pill${stale ? ' warn' : ''}`, role: 'status' },
             h('span', { class: `dot ${stale ? 'ac' : 'ft'}`, 'aria-hidden': 'true' }),
-            stale ? 'offline' : 'reconnecting')
+            reason ?? 'reconnecting')
         : h('span', { class: 'pill', role: 'status' }, h('span', { class: 'dot ok', 'aria-hidden': 'true' }), 'live'),
       h('button', { class: 'icon', style: 'min-height:38px;height:38px', 'aria-label': 'Start a session', onclick: () => go('spawn') },
         icon('<path d="M12 5v14M5 12h14"/>'))),
@@ -782,7 +801,9 @@ function viewBoard() {
   const banner = stale
     ? h('div', { class: 'banner' },
         h('h3', {}, age == null ? 'Showing the last board this phone saw' : `Showing the board from ${freshness(age)}`),
-        h('p', {}, 'Your laptop cannot be reached, so sessions may have moved on since.'))
+        h('p', {}, reason === 'not reading'
+          ? 'fleetd is answering, but it cannot read the fleet — so sessions may have moved on since. The fix is on the laptop.'
+          : 'Your laptop cannot be reached, so sessions may have moved on since.'))
     : null;
 
   const tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Filter by lane' }, LANES.map((l) => {

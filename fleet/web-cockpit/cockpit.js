@@ -851,16 +851,34 @@ function topBar() {
   const f = state.fleet;
   const counts = f?.counts ?? { blocked: 0, ready: 0, working: 0 };
   const rl = f?.rateLimit;
-  const stale = f?.health?.stale || !state.connected;
-  // "offline" without a number is a shrug. The question anyone asks next is
-  // how old the board on the screen is, and the answer is already in hand.
+  // Three states, not two.
+  //
+  // Watched in a browser: three seconds after the stream dropped, the cockpit
+  // said "offline" over a board three seconds old. The phone has said
+  // "reconnecting" for that case for weeks, and for the same reason — the word
+  // is a claim, and after enough false ones it stops carrying information.
+  //
+  // The third case is different again: fleetd answering every request and
+  // reporting that IT cannot read the fleet. Nothing is offline there, and the
+  // fix is on the laptop.
   const age = state.fleetAt ? Date.now() - state.fleetAt : null;
+  const unreachable = !state.connected && (age == null || age > 60_000);
+  const notReading = Boolean(f?.health?.stale);
+  const stale = unreachable || notReading;
+  // When fleetd is the stale thing, the number that matters is how long since
+  // IT last read the fleet — not how long since this page last fetched a
+  // board, which is seconds and says nothing.
+  const readAge = Number.isFinite(f?.health?.ageMs) ? f.health.ageMs : null;
+  const connection = unreachable
+    ? `offline · ${age == null ? 'no board yet' : freshness(age)}`
+    : notReading
+      ? `fleetd · not reading${readAge == null ? '' : ` · ${freshness(readAge)}`}`
+      : state.connected ? 'fleetd · live' : 'reconnecting';
 
   return h('div', { class: 'top' },
     h('div', { class: 'brand' }, svg('<path d="M3 17l6-6-6-6"/><path d="M12 19h9"/>', 'ico'), 'Fleet'),
-    h('div', { class: 'chip' }, h('span', { class: `dot ${stale ? 'ac' : 'ok'}` }),
-      h('span', { style: 'font-family:var(--mono);font-size:10.5px' },
-        stale ? `offline · ${age == null ? 'no board yet' : freshness(age)}` : 'fleetd · live')),
+    h('div', { class: 'chip' }, h('span', { class: `dot ${stale ? 'ac' : state.connected ? 'ok' : 'ft'}` }),
+      h('span', { style: 'font-family:var(--mono);font-size:10.5px' }, connection)),
     h('div', { style: 'display:flex;gap:6px' },
       [['blocked', 'ac'], ['ready', 'ok'], ['working', 'wk']].map(([lane, tone]) =>
         h('span', { class: 'chip', style: `color:var(--${tone})` },
