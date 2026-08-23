@@ -345,6 +345,7 @@ test('expired tokens do not accumulate', () => {
 
 import { EventEmitter } from 'node:events';
 import { NotificationService } from '../src/notify/index.js';
+import { SnoozeStore } from '../src/snooze.js';
 
 /** A push service that records rather than sending. */
 function recorder() {
@@ -598,4 +599,75 @@ test('a token minted after a revocation works normally', async () => {
   tokens.revokeAll();
   const fresh = tokens.mint('s1');
   assert.equal(tokens.verify(fresh, 'snooze')?.sessionId, 's1');
+});
+
+
+// ----------------------------------------------- snooze, through the wiring
+
+/**
+ * The policy's snooze handling is tested above. This tests the wiring, which
+ * is a different thing and the half that recently changed: the service used to
+ * consult the snooze store per event, and now consults it per tick through
+ * `offerAll`. A snooze that stopped being consulted would be silent in exactly
+ * the way that matters — you would not notice until a session you had muted
+ * buzzed you at 3am.
+ */
+test('a snoozed session is silent through the assembled service', async () => {
+  const c = clock();
+  const push = recorder();
+  const poller = new EventEmitter();
+  const snooze = new SnoozeStore({ now: c.now });
+  const notify = new NotificationService({ push, snooze, config: { quietHours: null }, now: c.now }).attach(poller);
+  try {
+    await snooze.snooze('s1', 4);
+    poller.emit('fleet', { sessions: [{ id: 's1', actionable: true }] });
+    poller.emit('tick', [blocked('s1', 'Importer')]);
+
+    assert.equal(push.sent.length, 0, 'muted means muted');
+  } finally {
+    notify.stop();
+  }
+});
+
+test('snoozing one session does not silence another in the same tick', async () => {
+  // The batch is decided together now, so a single snoozed session must not
+  // take the rest of the tick with it.
+  const c = clock();
+  const push = recorder();
+  const poller = new EventEmitter();
+  const snooze = new SnoozeStore({ now: c.now });
+  const notify = new NotificationService({ push, snooze, config: { quietHours: null }, now: c.now }).attach(poller);
+  try {
+    await snooze.snooze('quiet', 4);
+    poller.emit('fleet', { sessions: [{ id: 'quiet', actionable: true }, { id: 'loud', actionable: true }] });
+    poller.emit('tick', [blocked('quiet', 'Muted'), blocked('loud', 'Importer')]);
+
+    assert.equal(push.sent.length, 1);
+    assert.match(push.sent[0].title, /Importer/);
+  } finally {
+    notify.stop();
+  }
+});
+
+test('a snoozed session still reports a message that could not be delivered', async () => {
+  // Snooze silences a session's own noise. It is not permission to lose a
+  // message you believed you sent, and the wiring has to preserve that too.
+  const c = clock();
+  const push = recorder();
+  const poller = new EventEmitter();
+  const snooze = new SnoozeStore({ now: c.now });
+  const notify = new NotificationService({ push, snooze, config: { quietHours: null }, now: c.now }).attach(poller);
+  try {
+    await snooze.snooze('s1', 4);
+    poller.emit('fleet', { sessions: [{ id: 's1', actionable: true }] });
+    poller.emit('tick', [{
+      type: 'command.failed', severity: 'push', sessionId: 's1', title: 'Importer',
+      verb: 'send', attempts: 5, excerpt: 'use staging', error: 'Session expired.', at: c.t,
+    }]);
+
+    assert.equal(push.sent.length, 1, 'the one alert snooze may never suppress');
+    assert.equal(push.sent[0].undeliverable, true);
+  } finally {
+    notify.stop();
+  }
 });
