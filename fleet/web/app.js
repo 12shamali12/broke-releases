@@ -184,8 +184,14 @@ async function connect() {
   ]) {
     source.addEventListener(type, (e) => {
       const event = JSON.parse(e.data);
-      state.events.unshift(event);
-      state.events = state.events.slice(0, 200);
+      // Deduped by id: the stream replays from the cursor on connect,
+      // `seedFeed()` replays from the log at boot, and a reconnect replays
+      // again from Last-Event-ID. The feed is a record of what happened, so
+      // the same event twice reads as it having happened twice.
+      if (!event.id || !state.events.some((e) => e.id === event.id)) {
+        state.events.unshift(event);
+        state.events = state.events.slice(0, 200);
+      }
       if (e.lastEventId) store.set(LS.cursor, Number(e.lastEventId));
       // The pulse belongs to the transition, not to the state: a session that
       // has been blocked for an hour must not throb every time anything else
@@ -368,6 +374,38 @@ function go(view, selected = null) {
   if (view === 'settings') refreshMetrics();
   if (view === 'session' && selected) refreshHistory(selected);
   render();
+}
+
+/**
+ * Fill the Feed from fleetd's log, not only from what arrived since page load.
+ *
+ * `state.events` was populated exclusively by the live stream, so opening the
+ * app in the morning showed a Feed captioned "everything that happened,
+ * newest first" that said "Nothing yet" — about a daemon holding a full night
+ * of transitions. That is the one screen you open precisely because you were
+ * not watching.
+ *
+ * Seeding also sets the cursor, so the stream resumes after what was just
+ * replayed rather than sending it all again. The dedupe is belt and braces:
+ * ids are monotonic, so an overlap is detectable rather than merely likely to
+ * be absent.
+ */
+async function seedFeed() {
+  try {
+    const { events, cursor, truncated } = await api('/v1/events?since=0');
+    const seen = new Set(state.events.map((e) => e.id));
+    const merged = [...events.filter((e) => !seen.has(e.id)).reverse(), ...state.events];
+    state.events = merged
+      .sort((a, b) => (b.id ?? 0) - (a.id ?? 0))
+      .slice(0, 200);
+    // Only move the cursor forward. A stale localStorage value is not a
+    // reason to replay, but neither is it a reason to skip.
+    if (cursor > store.get(LS.cursor, 0)) store.set(LS.cursor, cursor);
+    state.feedTruncated = truncated;
+    render();
+  } catch {
+    // The board is the important half; a missing feed is not worth an error.
+  }
 }
 
 async function refreshHistory(sessionId) {
@@ -846,12 +884,21 @@ function viewFeed() {
             h('span', { class: 'title' }, describe(e)),
             h('span', { class: 'at' }, ago(Date.now() - e.at))),
           e.needsAction || e.error ? h('div', { class: 'body' }, e.needsAction ?? e.error) : null))
-    : [h('div', { class: 'empty' }, h('h2', {}, 'Nothing yet'), h('p', {}, 'Transitions land here as they happen.'))];
+    : [h('div', { class: 'empty' },
+        h('h2', {}, 'Nothing yet'),
+        h('p', {}, 'Transitions land here as they happen. fleetd has not recorded any since it started.'))];
 
   return [
     h('div', { class: 'head' }, h('h1', {}, 'Feed'),
       h('div', { class: 'sub' }, 'everything that happened, newest first')),
-    h('div', { class: 'scroll' }, groups),
+    h('div', { class: 'scroll' },
+      // Said out loud rather than left as a silently short list. The log is
+      // bounded, so "newest first" can quietly mean "and the rest is gone".
+      state.feedTruncated
+        ? h('p', { class: 'detail', style: 'margin:0 0 10px' },
+            'Older events have aged out of fleetd\u2019s log.')
+        : null,
+      groups),
   ];
 }
 
@@ -879,18 +926,43 @@ function describe(e) {
 function viewSearch() {
   // The id is load-bearing: without it a push event arriving mid-search
   // re-renders the view and takes the caret out of the field.
-  const input = h('input', { id: 'q', placeholder: 'Search sessions…', type: 'search', 'aria-label': 'Search sessions' });
+  const input = h('input', {
+    id: 'q', placeholder: 'Title, repo, branch or status…', type: 'search',
+    'aria-label': 'Search sessions', autofocus: true,
+    // Phone keyboards autocapitalise and autocorrect by default, which turns
+    // a branch name into a sentence and a repo slug into a misspelling.
+    autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false',
+  });
   input.value = state.query ?? '';
 
   // Results arrive after the keystroke that asked for them, so they have to
   // announce themselves — otherwise a screen reader user types into silence.
   const results = h('div', { role: 'region', 'aria-live': 'polite', 'aria-label': 'Search results' });
 
+  /**
+   * With nothing typed, show the board rather than a blank page.
+   *
+   * Tapping Search used to produce an empty screen with an empty box on it —
+   * no hint about what is searchable and nothing to look at. Every session is
+   * already in memory, so listing them costs nothing and turns a dead end
+   * into a second way to browse.
+   */
+  const idle = () => {
+    const all = (state.fleet?.sessions ?? []).filter((x) => x.status !== 'archived');
+    results.append(
+      h('p', { class: 'detail', style: 'margin:0 0 10px' },
+        all.length ? `All ${all.length} sessions. Type to narrow.` : 'No sessions yet.'),
+      ...all.map(sessionCard),
+      h('p', { class: 'detail', style: 'margin-top:14px;font-size:11.5px' },
+        'Searches titles, repos, branches and status lines. Transcripts are not indexed.'),
+    );
+  };
+
   const run = async () => {
     const q = input.value.trim();
     state.query = q;
     results.replaceChildren();
-    if (!q) return;
+    if (!q) return idle();
     try {
       const body = await api(`/v1/search?q=${encodeURIComponent(q)}`);
       const n = body.matches.length;
@@ -903,8 +975,19 @@ function viewSearch() {
       results.append(h('p', { class: 'detail' }, 'Search needs your laptop to be reachable.'));
     }
   };
-  // Re-run on re-render so results are not silently blanked by an event.
-  if (state.query) queueMicrotask(run);
+  // Re-run on re-render so results are not silently blanked by an event —
+  // and paint the idle list on the first render, before anything is typed.
+  queueMicrotask(() => {
+    run();
+    // `autofocus` does nothing on an element inserted after parse, so the
+    // Search tab opened with an unfocused box and no keyboard. Focused here
+    // instead — but only when the person has not already put the caret
+    // somewhere, so a re-render triggered by an incoming event cannot yank
+    // it back mid-sentence.
+    const active = document.activeElement;
+    const busy = active && active !== document.body && 'selectionStart' in active;
+    if (!busy) input.focus({ preventScroll: true });
+  });
   input.addEventListener('input', () => { clearTimeout(run.t); run.t = setTimeout(run, 220); });
 
   return [
@@ -1290,7 +1373,9 @@ if (state.token) {
     // Offline cold start: the cached board is already on screen, dated.
     render();
   });
-  connect();
+  // Before connect(), so the stream resumes after the replay instead of
+  // re-sending it. connect() reads the cursor this leaves behind.
+  seedFeed().finally(connect);
   flushOutbox();
 }
 

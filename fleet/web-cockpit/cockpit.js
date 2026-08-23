@@ -91,6 +91,28 @@ async function refresh() {
   setFleet(await api('/v1/fleet'));
 }
 
+/**
+ * Fill the event list from fleetd's log rather than only from this page load.
+ *
+ * The panel's "observed transitions" is the record of what happened while you
+ * were not looking, so populating it exclusively from the live stream made it
+ * empty at exactly the moment it mattered — every reload, and every fresh
+ * tab. Ids are monotonic, so the overlap with anything already held is
+ * detectable rather than merely improbable.
+ */
+async function seedEvents() {
+  try {
+    const { events } = await api('/v1/events?since=0');
+    const seen = new Set(state.events.map((e) => e.id));
+    state.events = [...events.filter((e) => !seen.has(e.id)), ...state.events]
+      .sort((a, b) => (b.id ?? 0) - (a.id ?? 0))
+      .slice(0, 300);
+    render();
+  } catch {
+    // The board is the important half.
+  }
+}
+
 // ---------------------------------------------------------------- stream
 
 let source = null;
@@ -136,8 +158,15 @@ async function connect() {
   for (const type of EVENT_TYPES) {
     source.addEventListener(type, (e) => {
       const event = JSON.parse(e.data);
-      state.events.unshift(event);
-      state.events = state.events.slice(0, 300);
+      // Deduped by id, not merely prepended. The stream replays from the
+      // cursor on connect, `seedEvents()` replays from the log at boot, and a
+      // reconnect replays again from Last-Event-ID — three paths to the same
+      // event, and the list is the record of what happened, so a duplicate
+      // reads as it having happened twice.
+      if (!event.id || !state.events.some((e) => e.id === event.id)) {
+        state.events.unshift(event);
+        state.events = state.events.slice(0, 300);
+      }
       if (event.sessionId) {
         // One flash on the row, then it settles. Motion that means something.
         state.changed.add(event.sessionId);
@@ -1666,7 +1695,11 @@ document.addEventListener('click', (e) => {
 
 if (state.token) {
   refresh().catch(() => render());
-  connect();
+  // Before connect(), so the stream resumes after the replay rather than
+  // re-sending it. Without this the session panel's "observed transitions"
+  // list started empty on every reload, about a daemon that had been
+  // watching all night.
+  seedEvents().finally(connect);
   refreshMedia();
 }
 

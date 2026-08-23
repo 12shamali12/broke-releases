@@ -351,3 +351,31 @@ test('the cockpit never leaves a write action live on a session that refuses wri
     assert.match(row[0], /!s\.reachable|reachLabel/, `${label} must be gated on reachability, not only on status (${verb})`);
   }
 });
+
+for (const client of CLIENTS) {
+  test(`${client.name}: the event list is seeded from the log, not only from this page load`, async () => {
+    // `state.events` was filled exclusively by the live stream, and the stream
+    // resumes from a stored cursor. So a device that had been here before —
+    // cursor already past everything fleetd recorded — opened to an empty
+    // Feed about a daemon that had been watching all night. Verified by
+    // disabling the seed in a real browser: "Nothing yet".
+    const src = await read(client.js);
+    assert.match(src, /await api\('\/v1\/events\?since=0'\)/, 'seed from the whole log, not from the cursor');
+    const boot = /if \(state\.token\) \{[\s\S]*?\n\}/.exec(src);
+    assert.ok(boot, 'both clients have a boot block');
+    assert.match(boot[0], /seed\w*\(\)\.finally\(connect\)/,
+      'seed before connecting, or the stream resends what was just replayed');
+  });
+
+  test(`${client.name}: an event that arrives twice is shown once`, async () => {
+    // Three paths deliver the same event: the boot seed, the stream's replay
+    // from the cursor, and a reconnect's replay from Last-Event-ID. The feed
+    // is a record of what happened, so a duplicate reads as it having
+    // happened twice.
+    const src = await read(client.js);
+    const handler = /state\.events\.unshift\(event\)/.exec(src);
+    assert.ok(handler, 'the stream handler adds to the list');
+    const before = src.slice(Math.max(0, handler.index - 200), handler.index);
+    assert.match(before, /some\(\(e\) => e\.id === event\.id\)/, 'dedupe by id before adding');
+  });
+}
