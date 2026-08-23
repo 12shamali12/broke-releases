@@ -153,3 +153,29 @@ test('a session that arrives working is only an appearance', () => {
     ['session.appeared'],
   );
 });
+
+
+test('a session losing its write path says which way it went', () => {
+  // Reachable to watch-only is what happens when a session's Remote Control
+  // ends. Reporting it as "disconnected" says a message will be delivered
+  // when it wakes up, and no message ever will.
+  const [before] = fleetA.sessions;
+  const after = { ...before, reachable: false, reachLabel: 'watch only' };
+  const [event] = diffFleet(
+    { ...fleetA, sessions: [{ ...before, reachable: true, reachLabel: null }] },
+    { ...fleetA, sessions: [after] },
+  ).filter((e) => e.type === 'session.unreachable');
+
+  assert.ok(event, 'the transition is reported');
+  assert.equal(event.reason, 'watch only');
+});
+
+test('a session whose laptop went to sleep still says disconnected', () => {
+  const [before] = fleetA.sessions;
+  const after = { ...before, reachable: false, reachLabel: 'disconnected' };
+  const [event] = diffFleet(
+    { ...fleetA, sessions: [{ ...before, reachable: true, reachLabel: null }] },
+    { ...fleetA, sessions: [after] },
+  ).filter((e) => e.type === 'session.unreachable');
+  assert.equal(event.reason, 'disconnected');
+});

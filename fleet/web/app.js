@@ -996,7 +996,11 @@ function describe(e) {
     'session.reviewReady': `${title} is ready for review`,
     'session.started': `${title} started working`,
     'session.finished': `${title} finished its turn`,
-    'session.unreachable': `${title} disconnected`,
+    // The event carries which kind. "disconnected" about a session that went
+    // watch-only promises a delivery on reconnect that will never come.
+    'session.unreachable': e.reason === 'watch only'
+      ? `${title} can no longer be messaged`
+      : e.reason === 'archived' ? `${title} was archived` : `${title} disconnected`,
     'session.reachable': `${title} reconnected`,
     'session.renamed': `${title} was renamed`,
     'session.appeared': `${title} appeared`,

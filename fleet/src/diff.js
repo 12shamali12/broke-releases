@@ -193,7 +193,11 @@ export function diffFleet(previous, next, { stallAfterMs = STALL_AFTER_MS } = {}
         event('session.unreachable', SEVERITY.FEED, session, {
           at: now,
           envKind: session.envKind,
-          reason: session.status === 'archived' ? 'archived' : 'disconnected',
+          // The model's own label, not a guess from `status`. A session whose
+          // Remote Control ends goes from reachable to watch-only, and this
+          // reported that as "disconnected" — which says a message will be
+          // delivered when it wakes up, and no message ever will.
+          reason: session.reachLabel ?? 'disconnected',
         }),
       );
     }

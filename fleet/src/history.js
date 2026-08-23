@@ -50,7 +50,13 @@ const PHRASING = {
   'session.reviewReady': (e) => ({ text: e.detail ? `Ready for review: ${e.detail}` : 'Ready for review', tone: 'ok', actor: 'session' }),
   'session.started': () => ({ text: 'Started working', tone: 'wk', actor: 'session' }),
   'session.finished': () => ({ text: 'Finished its turn', tone: 'ft', actor: 'session' }),
-  'session.unreachable': () => ({ text: 'Went unreachable', tone: 'ft', actor: 'session' }),
+  'session.unreachable': (e) => ({
+    text: e.detail === 'watch only' ? 'Can no longer be messaged'
+      : e.detail === 'archived' ? 'Was archived'
+      : 'Went unreachable',
+    tone: 'ft',
+    actor: 'session',
+  }),
   'session.reachable': () => ({ text: 'Came back', tone: 'ok', actor: 'session' }),
   'session.modelChanged': (e) => ({ text: `Model changed to ${e.detail}`, tone: 'ft', actor: 'session' }),
   'session.effortChanged': (e) => ({ text: `Effort changed to ${e.detail}`, tone: 'ft', actor: 'session' }),
@@ -198,6 +204,7 @@ export class HistoryStore {
         : event.type === 'session.stalled' ? formatAge(event.staleFor)
         : event.type === 'session.reviewReady' ? event.detail
         // verb AND reason: "send — Session expired. Please run /login".
+        : event.type === 'session.unreachable' ? event.reason
         : event.type === 'command.failed'
           ? [event.excerpt ? `"${event.excerpt}"` : event.verb, event.error].filter(Boolean).join(' — ')
         : event.to ?? null;

@@ -236,3 +236,17 @@ test('a failed delivery records why, not only that', async () => {
   assert.match(entry.text, /send/);
   assert.match(entry.text, /Session expired/, 'the reason is the point of the entry');
 });
+
+test('a session that can no longer be messaged does not read as merely offline', async () => {
+  // "Went unreachable" reads as "it will be back". A session whose Remote
+  // Control ended is still running, still visible, and permanently unwritable
+  // — and a message queued for it will never arrive.
+  const h = new HistoryStore({});
+  const poller = new EventEmitter();
+  h.attach(poller);
+  poller.emit('event', { type: 'session.unreachable', sessionId: 's1', reason: 'watch only', at: 1 });
+  poller.emit('event', { type: 'session.unreachable', sessionId: 's2', reason: 'disconnected', at: 1 });
+
+  assert.match(h.for('s1')[0].text, /no longer be messaged/);
+  assert.match(h.for('s2')[0].text, /unreachable/);
+});
