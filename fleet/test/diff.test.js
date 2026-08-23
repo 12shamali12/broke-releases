@@ -179,3 +179,61 @@ test('a session whose laptop went to sleep still says disconnected', () => {
   ).filter((e) => e.type === 'session.unreachable');
   assert.equal(event.reason, 'disconnected');
 });
+
+
+test('a session nearing its context limit is mentioned, once, without buzzing', () => {
+  // Two automatic compactions in a real transcript fired just under 79% of a
+  // 1M window, each dropping about 770,000 tokens to get back to 17,000. That
+  // is lossy and the CLI chooses what survives; `fleet compact <ref> <focus>`
+  // lets you choose instead, which is only useful if you know it is coming.
+  const [base] = fleetA.sessions;
+  const below = { ...base, contextMax: 1_000_000, contextUsed: 600_000 };
+  const above = { ...base, contextMax: 1_000_000, contextUsed: 720_000 };
+
+  const [event] = diffFleet({ ...fleetA, sessions: [below] }, { ...fleetA, sessions: [above] })
+    .filter((e) => e.type === 'session.contextHigh');
+  assert.ok(event, 'crossing the line is reported');
+  assert.equal(event.severity, SEVERITY.BADGE, 'only three things get to interrupt you, and this is not one');
+  assert.equal(event.percent, 72);
+});
+
+test('a session already near the top does not report it every poll', () => {
+  // Same shape as `stalled`, and for the same reason: a long session sitting
+  // at 90% must not badge for the rest of the day.
+  const [base] = fleetA.sessions;
+  const high = { ...base, contextMax: 1_000_000, contextUsed: 900_000 };
+  const higher = { ...base, contextMax: 1_000_000, contextUsed: 910_000 };
+  assert.deepEqual(
+    diffFleet({ ...fleetA, sessions: [high] }, { ...fleetA, sessions: [higher] })
+      .filter((e) => e.type === 'session.contextHigh'),
+    [],
+  );
+});
+
+test('a session with no reading cannot cross a line it is not on', () => {
+  // `contextUsed` is null for a session that has not answered yet, and
+  // null/max would be 0 — which crosses nothing, but only by luck. This
+  // asserts the guard rather than the luck.
+  const [base] = fleetA.sessions;
+  const unknown = { ...base, contextMax: 1_000_000, contextUsed: null };
+  const known = { ...base, contextMax: 1_000_000, contextUsed: 800_000 };
+  assert.deepEqual(
+    diffFleet({ ...fleetA, sessions: [unknown] }, { ...fleetA, sessions: [known] })
+      .filter((e) => e.type === 'session.contextHigh'),
+    [],
+    'the first real reading is not a "crossing"',
+  );
+});
+
+test('a session that compacts back down can warn again later', () => {
+  // The whole point: it compacted, it is filling up again, and you would want
+  // to know a second time.
+  const [base] = fleetA.sessions;
+  const after = { ...base, contextMax: 1_000_000, contextUsed: 17_000 };
+  const refilled = { ...base, contextMax: 1_000_000, contextUsed: 750_000 };
+  assert.equal(
+    diffFleet({ ...fleetA, sessions: [after] }, { ...fleetA, sessions: [refilled] })
+      .filter((e) => e.type === 'session.contextHigh').length,
+    1,
+  );
+});

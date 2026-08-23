@@ -17,6 +17,19 @@ export const SEVERITY = { PUSH: 'push', BADGE: 'badge', FEED: 'feed' };
 export const STALL_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * How full a context window has to get before it is worth mentioning.
+ *
+ * Not a guess. Two automatic compactions in a real transcript fired at
+ * 788,746 and 783,988 tokens of a 1M window — both a shade under 79% — and
+ * each dropped about 770,000 tokens of conversation to get back to 17,000.
+ *
+ * That is a lossy event, and the CLI chooses what to keep. `fleet compact
+ * <ref> <focus>` lets you choose instead, which is only useful if you know
+ * it is coming. Seventy per cent leaves room to decide.
+ */
+export const CONTEXT_HIGH = 0.7;
+
+/**
  * What fleetd found already waiting when it opened its eyes.
  *
  * Dated by when the session actually went quiet rather than by now, so the
@@ -71,7 +84,14 @@ function event(type, severity, session, extra = {}) {
  * coalesces three or more into a single digest, which is precisely what
  * "eighteen notifications on startup" needs.
  */
-export function diffFleet(previous, next, { stallAfterMs = STALL_AFTER_MS } = {}) {
+/** Fraction of the window in use, or null when there is no reading. */
+function contextFraction(session) {
+  const used = session.contextUsed;
+  if (!session.contextMax || !Number.isFinite(used)) return null;
+  return used / session.contextMax;
+}
+
+export function diffFleet(previous, next, { stallAfterMs = STALL_AFTER_MS, contextHigh = CONTEXT_HIGH } = {}) {
   const now = next.generatedAt;
   if (!previous) return firstSight(next, now);
 
@@ -162,6 +182,26 @@ export function diffFleet(previous, next, { stallAfterMs = STALL_AFTER_MS } = {}
     if (session.lane === 'ready' && old.lane !== 'ready') {
       events.push(
         event('session.reviewReady', SEVERITY.BADGE, session, { at: now, detail: session.summary.detail }),
+      );
+    }
+
+    // Fires once, on the poll where it crosses — same shape as `stalled`, and
+    // for the same reason: a session that sits near the top of its window
+    // must not badge on every poll for the rest of the day.
+    //
+    // Badge, never push. Nothing here is going wrong yet; it is a heads-up
+    // that the CLI is about to compact and choose for you. Only three things
+    // get to interrupt a person, and this is not one of them.
+    const ctxNow = contextFraction(session);
+    const ctxWas = contextFraction(old);
+    if (ctxNow != null && ctxWas != null && ctxNow >= contextHigh && ctxWas < contextHigh) {
+      events.push(
+        event('session.contextHigh', SEVERITY.BADGE, session, {
+          at: now,
+          used: session.contextUsed,
+          max: session.contextMax,
+          percent: Math.round(ctxNow * 100),
+        }),
       );
     }
 

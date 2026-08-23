@@ -30,7 +30,7 @@ comes from the terminal you are sitting at, and every one after it from
 something you have already decided to trust.
 
 ```
-npm test                        # 514 tests, no network, no CLI, no credentials
+npm test                        # 518 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs reach        # how to open it from your phone
@@ -609,6 +609,13 @@ smaller context, so the usage on that turn says so. Nothing has to notice the
 A session with no assistant turn yet has no reading, and the meter says so
 rather than drawing an empty bar — which would read as "plenty of room left",
 the opposite of the thing you look at a context meter to learn.
+
+Crossing 70% raises `session.contextHigh`, once, at badge level — never a
+push. The threshold is measured rather than chosen: two automatic compactions
+in a real transcript fired just under 79% of a 1M window, each dropping about
+770,000 tokens of conversation to get back to 17,000. That is lossy, and the
+CLI decides what survives. `fleet compact <ref> <focus>` lets you decide
+instead, which is only useful if you know it is coming.
 
 ## Known gap: the rate-limit percentage
 

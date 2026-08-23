@@ -119,7 +119,7 @@ let source = null;
 const EVENT_TYPES = [
   'session.blocked', 'session.stalled', 'session.reviewReady', 'session.started', 'session.finished',
   'session.unreachable', 'session.reachable', 'session.renamed', 'session.appeared', 'session.vanished',
-  'session.modelChanged', 'session.effortChanged', 'rate.limited', 'rate.overage', 'command.failed',
+  'session.modelChanged', 'session.effortChanged', 'session.contextHigh', 'rate.limited', 'rate.overage', 'command.failed',
 ];
 
 /**
@@ -1655,6 +1655,7 @@ function describe(e) {
     'session.renamed': `${t} was renamed`,
     'session.appeared': `${t} appeared`,
     'session.vanished': `${t} is gone`,
+    'session.contextHigh': `${t} is ${e.percent}% through its context`,
     'session.modelChanged': `${t} → ${e.to}`,
     'session.effortChanged': `${t} effort → ${e.to}`,
     'rate.limited': 'rate limit hit',

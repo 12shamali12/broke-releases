@@ -59,6 +59,13 @@ const PHRASING = {
   }),
   'session.reachable': () => ({ text: 'Came back', tone: 'ok', actor: 'session' }),
   'session.modelChanged': (e) => ({ text: `Model changed to ${e.detail}`, tone: 'ft', actor: 'session' }),
+  // Worth a line, because the compaction that follows is lossy and the entry
+  // is how you know afterwards why the session forgot something.
+  'session.contextHigh': (e) => ({
+    text: `Context ${e.detail ?? ''} full — the CLI will compact soon`.replace('  ', ' '),
+    tone: 'ft',
+    actor: 'session',
+  }),
   'session.effortChanged': (e) => ({ text: `Effort changed to ${e.detail}`, tone: 'ft', actor: 'session' }),
 
   // "Queued", not "sent". Nothing in Fleet ever reports a message as sent at
@@ -204,6 +211,7 @@ export class HistoryStore {
         : event.type === 'session.stalled' ? formatAge(event.staleFor)
         : event.type === 'session.reviewReady' ? event.detail
         // verb AND reason: "send — Session expired. Please run /login".
+        : event.type === 'session.contextHigh' ? `${event.percent}%`
         : event.type === 'session.unreachable' ? event.reason
         : event.type === 'command.failed'
           ? [event.excerpt ? `"${event.excerpt}"` : event.verb, event.error].filter(Boolean).join(' — ')

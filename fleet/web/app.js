@@ -192,7 +192,7 @@ async function connect() {
   for (const type of [
     'session.blocked', 'session.stalled', 'session.reviewReady', 'session.started',
     'session.finished', 'session.unreachable', 'session.reachable', 'session.renamed',
-    'session.appeared', 'session.vanished', 'session.modelChanged', 'session.effortChanged',
+    'session.appeared', 'session.vanished', 'session.modelChanged', 'session.effortChanged', 'session.contextHigh',
     'rate.limited', 'rate.overage', 'command.failed',
   ]) {
     source.addEventListener(type, (e) => {
@@ -1005,6 +1005,7 @@ function describe(e) {
     'session.renamed': `${title} was renamed`,
     'session.appeared': `${title} appeared`,
     'session.vanished': `${title} is gone`,
+    'session.contextHigh': `${title} is ${e.percent}% through its context`,
     'session.modelChanged': `${title} switched to ${e.to}`,
     'session.effortChanged': `${title} effort → ${e.to}`,
     'rate.limited': 'Rate limit hit',
