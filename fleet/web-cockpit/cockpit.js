@@ -958,7 +958,7 @@ function panel(s) {
         !s.reachable ? 'Unreachable' : s.lane === 'blocked' ? 'Needs you' : s.lane === 'ready' ? 'Ready for review' : 'Running'),
       h('div', { class: 'txt' },
         s.summary.needsAction ?? s.summary.detail ??
-          (s.reachable ? 'No status reported yet.' : 'Only the machine hosting this session can revive it.')),
+          (s.reachable ? 'No status reported yet.' : s.reachableReason ?? 'It cannot be reached right now.')),
       h('button', {
         class: 'cta',
         style: s.reachable ? `background:var(--${tone});color:var(--onac)` : 'background:var(--s2);color:var(--ft);border:1px solid var(--bd)',

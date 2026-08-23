@@ -570,8 +570,11 @@ function viewSession() {
 
       !s.reachable
         ? h('div', { class: 'banner', style: 'margin:0 0 14px' },
-            h('h3', {}, 'Unreachable'),
-            h('p', {}, 'This bridge session is disconnected. Only the machine it runs on can revive it — anything you send is held until then.'))
+            h('h3', {}, 'Cannot be messaged'),
+            // The reason comes from the model now: "disconnected" and "alive but
+            // not addressable" call for completely different responses, and one
+            // label for both makes each look like the same shrug.
+            h('p', {}, s.reachableReason ?? 'Anything you send is held until it can be delivered.'))
         : null,
 
       h('div', { class: 'card' },

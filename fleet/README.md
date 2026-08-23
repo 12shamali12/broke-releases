@@ -9,7 +9,7 @@ losing them, and serves all of that over authenticated HTTP with a live stream.
 Both clients are built against [these designs](https://claude.ai/code/artifact/79103714-1eb3-42d4-9157-00ba40f75fd3).
 
 ```
-npm test                        # 386 tests, no network, no CLI, no credentials
+npm test                        # 389 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs doctor       # can this machine run Fleet? no daemon needed
@@ -236,6 +236,29 @@ Three decisions in that adapter are worth stating:
   directory gives a session a transcript under each slug; without deduplicating
   on the newest, it appears twice with two plausible states and no way to tell
   which is current.
+
+### Watching is not the same as controlling
+
+The limit that matters most, found by running the whole stack against a
+five-session synthetic laptop rather than by reading the code:
+
+**Fleet can watch a local session but cannot message it.** The only documented
+write path is `claude -p "…" --cloud <id>`, and that takes a *cloud* session
+id. Given a local one the CLI refuses with `--cloud cannot be combined with
+--print. Cloud sessions are interactive only` — which reads like a flag problem
+and is really an addressing one, and would send anyone straight to the wrong
+bug.
+
+So a purely local session shows as **watch only**: on the board, with its
+status, its question and its history, and with every control dimmed and the
+reason attached. Running `/remote-control` inside a session gives it a cloud id
+and Fleet can drive it — which is also why Remote Control sessions were the
+design's `bridge` case all along.
+
+A write to such a session is **refused, not queued**. Held and impossible are
+different: a disconnected session may wake up, so its command waits; one that
+can never be addressed would otherwise mean five retries, a failure
+notification, and a message you believed was on its way.
 
 The honest limit: **strategy D only sees this machine.** A cloud session started
 from a phone is invisible to it, which is why its `capabilities.scope` says

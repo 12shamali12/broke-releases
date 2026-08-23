@@ -138,7 +138,14 @@ function printBoard(fleet, { lane = null } = {}) {
     const index = `${C.dim}${String(active(fleet).indexOf(s) + 1).padStart(2)}${C.off}`;
     const title = s.title.padEnd(width).slice(0, width);
     const meta = `${C.dim}${(s.modelId ?? '?').replace('claude-', '').padEnd(12)}${ago(s.staleFor).padStart(4)}${C.off}`;
-    const flag = s.reachable ? '' : ` ${C.dim}[unreachable]${C.off}`;
+    // Two different situations, two different words. "Disconnected" is
+    // temporary and a message waits; "watch only" is permanent until you turn
+    // Remote Control on, and a message would never arrive.
+    const flag = s.reachable
+      ? ''
+      : / cloud session id/.test(s.reachableReason ?? '')
+        ? ` ${C.dim}[watch only]${C.off}`
+        : ` ${C.dim}[unreachable]${C.off}`;
     const muted = s.snoozedUntil ? ` ${C.dim}[snoozed ${ago(s.snoozedUntil - Date.now())}]${C.off}` : '';
     console.log(` ${index} ${colour}${LANE_MARK[s.lane] ?? '·'}${C.off} ${title}  ${meta}${flag}${muted}`);
     if (s.summary?.needsAction) {

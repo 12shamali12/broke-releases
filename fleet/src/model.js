@@ -113,10 +113,35 @@ function rateLimitFrom(raw) {
  * on demand. Bridge sessions are local CLI sessions exposed to the web, so they
  * are only reachable while the machine hosting them is connected.
  */
-export function isReachable({ envKind, connection, status }) {
+export function isReachable({ envKind, connection, status, addressable = true }) {
   if (status === 'archived') return false;
+  // A session Fleet cannot address is not reachable, however alive it is. See
+  // `unreachableBecause` for why this is separate from being connected.
+  if (!addressable) return false;
   if (envKind === 'bridge') return connection === 'connected';
   return true;
+}
+
+/**
+ * Why a session cannot be reached, in words a person can act on.
+ *
+ * "Unreachable" covers three different situations that call for three
+ * different responses, and a single label makes all of them look like the same
+ * shrug. Getting this right is the difference between a dimmed button that
+ * teaches you something and one that just frustrates.
+ */
+export function unreachableBecause({ envKind, connection, status, addressable = true }) {
+  if (status === 'archived') return 'This session is archived.';
+  if (!addressable) {
+    // The one that is genuinely surprising: alive, on this machine, visible —
+    // and still not writable, because the only documented write path takes a
+    // cloud session id and this session does not have one.
+    return 'Fleet can see this session but cannot message it: the documented write path needs a cloud session id, and a purely local session does not have one. Turn on Remote Control in it (/remote-control) and Fleet can reach it.';
+  }
+  if (envKind === 'bridge' && connection !== 'connected') {
+    return 'Only the machine hosting this session can revive it.';
+  }
+  return null;
 }
 
 export function normalizeSession(raw, now = Date.now()) {
@@ -131,7 +156,13 @@ export function normalizeSession(raw, now = Date.now()) {
   const model = ctx.model ?? null;
   const updatedAt = raw.updated_at ? Date.parse(raw.updated_at) : null;
 
-  const reachable = isReachable({ envKind, connection, status });
+  // A session is addressable when the documented write path can name it. That
+  // path takes a cloud session id, so a bare local id cannot be written to at
+  // all — verified against the CLI, which refuses with "Cloud sessions are
+  // interactive only".
+  const addressable = raw.addressable !== false;
+  const reachableArgs = { envKind, connection, status, addressable };
+  const reachable = isReachable(reachableArgs);
 
   return {
     id: raw.id,
@@ -161,6 +192,8 @@ export function normalizeSession(raw, now = Date.now()) {
     // --- derived ---
     staleFor: updatedAt == null ? null : Math.max(0, now - updatedAt),
     reachable,
+    /** Null when reachable; otherwise something worth reading. */
+    reachableReason: reachable ? null : unreachableBecause(reachableArgs),
     /** Blocked *and* it told us what it wants. Drives notifications. */
     actionable: lane === 'blocked' && Boolean(summary.needsAction),
   };

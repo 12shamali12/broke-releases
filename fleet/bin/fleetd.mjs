@@ -89,6 +89,11 @@ function buildAdapter(config) {
   console.log(
     `${C.warn}!${C.off} no proven credential endpoint — reading this machine only.\n` +
       `  ${C.dim}sessions running elsewhere, including cloud sessions, will not appear.\n` +
+      // The thing that surprises people, said before they hit it: seeing a
+      // session and being able to message it are different capabilities.
+      `  a local session can be WATCHED but not messaged — the documented write\n` +
+      `  path takes a cloud session id. Run /remote-control inside a session to\n` +
+      `  give it one, and Fleet can drive it.\n` +
       `  run \`node bin/spike.mjs\` to look for a fuller path.${C.off}`,
   );
   return new CompositeAdapter({ primary: new LocalAdapter(), writer: new CliAdapter() });

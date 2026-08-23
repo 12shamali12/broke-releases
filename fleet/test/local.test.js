@@ -13,7 +13,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { LocalAdapter, needsActionFrom, projectSlug, readTranscript, remoteUrl, tailLines, toRawRecord, trailingQuestion } from '../src/adapters/local.js';
+import { LocalAdapter, isCloudAddressable, needsActionFrom, projectSlug, readTranscript, remoteUrl, tailLines, toRawRecord, trailingQuestion } from '../src/adapters/local.js';
 import { normalizeFleet } from '../src/model.js';
 
 const entry = (over = {}) => JSON.stringify({
@@ -144,7 +144,30 @@ test('a local session becomes the same raw shape the API returns', () => {
   assert.equal(s.branch, 'main');
   assert.equal(s.modelId, 'claude-opus-5');
   assert.equal(s.envKind, 'bridge', 'a process on this machine is exactly what bridge means');
-  assert.equal(s.reachable, true, 'we just saw its pid');
+  // Alive, visible, and still not reachable — because `--cloud` takes a cloud
+  // session id and a purely local session does not have one. Verified against
+  // the CLI, which refuses with "Cloud sessions are interactive only".
+  assert.equal(s.reachable, false);
+  assert.match(s.reachableReason, /cloud session id/);
+  assert.match(s.reachableReason, /remote-control/i, 'and says how to fix it');
+});
+
+test('a session that also exists on the cloud side IS reachable', () => {
+  // Remote Control gives a local session a cloud id, which is precisely what
+  // makes it addressable. This is the difference between a dashboard and a
+  // control plane, so it is asserted directly.
+  const raw = toRawRecord({ sessionId: 'session_01ABC', name: 'importer' }, readTranscript([entry()]));
+  const s = normalizeFleet([raw]).sessions[0];
+  assert.equal(s.reachable, true);
+  assert.equal(s.reachableReason, null);
+});
+
+test('id shape is what decides addressability', () => {
+  assert.equal(isCloudAddressable('session_01ABC'), true);
+  assert.equal(isCloudAddressable('cse_abc'), true);
+  assert.equal(isCloudAddressable('5aa3a0a7-9998-55a9-baad-e615a48d7dc5'), false);
+  assert.equal(isCloudAddressable(''), false);
+  assert.equal(isCloudAddressable(null), false);
 });
 
 test('a finished turn is review-ready, never blocked', () => {
@@ -399,7 +422,8 @@ test('a running session is enriched, not duplicated, by its transcript', async (
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0].title, 'importer', 'named by the process');
     assert.equal(sessions[0].branch, 'main', 'detailed by the transcript');
-    assert.equal(sessions[0].reachable, true);
+    // Local id, so watchable but not writable — see the addressability tests.
+    assert.equal(sessions[0].reachable, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -597,4 +621,24 @@ test('the cache does not grow with sessions that have fallen out of the window',
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('a send refused for the wrong reason is explained for the right one', async () => {
+  // The CLI answers "--cloud cannot be combined with --print" for an id that
+  // is not a cloud id. That reads as a flag problem and is an addressing one;
+  // someone reading it goes looking for the wrong bug entirely.
+  const { explainSendFailure } = await import('../src/adapters/cli.js');
+
+  const explained = explainSendFailure(
+    '--cloud cannot be combined with --print.\nCloud sessions are interactive only.',
+    'abc-123',
+  );
+  assert.match(explained, /not a cloud session id/);
+  assert.match(explained, /flags are correct/);
+  assert.match(explained, /remote-control/i, 'and says what to do');
+
+  // Everything else keeps the CLI's own wording, which is usually better.
+  assert.equal(explainSendFailure('Session expired. Please run /login.', 'x'), 'Session expired. Please run /login.');
+  assert.equal(explainSendFailure('', 'x'), '');
+  assert.equal(explainSendFailure(null, 'x'), null);
 });

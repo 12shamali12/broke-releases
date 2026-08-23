@@ -58,7 +58,7 @@ export class CliAdapter {
       stdout = err.stdout ?? '';
       stderr = err.stderr ?? err.message ?? '';
       if (!stdout.trim()) {
-        throw new Error(cleanCliError(stderr) || `claude exited ${err.code ?? '?'}`);
+        throw new Error(explainSendFailure(cleanCliError(stderr), sessionId) || `claude exited ${err.code ?? '?'}`);
       }
     }
 
@@ -73,6 +73,11 @@ export class CliAdapter {
       throw new Error(parsed.error || 'send rejected without a reason');
     }
     return { ok: true, sessionId: parsed.session_id ?? sessionId, url: parsed.url ?? null };
+  }
+
+  /** Whether this adapter could address a session at all, before trying. */
+  canAddress(sessionId) {
+    return /^(session_|cse_)/.test(String(sessionId ?? ''));
   }
 
   async probe() {
@@ -97,4 +102,27 @@ export function cleanCliError(text) {
     .map((l) => l.trim())
     .find((l) => l.length > 0);
   return (line ?? '').replace(/^Error:\s*/i, '');
+}
+
+/**
+ * Turn one particular CLI refusal into something true.
+ *
+ * Given a session id that is not a cloud id, the CLI answers "--cloud cannot
+ * be combined with --print. Cloud sessions are interactive only." That reads
+ * as a flag problem and is really an addressing one: the flags are fine, the
+ * id is not a cloud id. Someone reading it goes looking for the wrong bug.
+ *
+ * Anything else is passed through unchanged — the CLI's own wording is usually
+ * better than a paraphrase.
+ */
+export function explainSendFailure(message, sessionId) {
+  if (!message) return message;
+  if (!/--cloud cannot be combined with --print|Cloud sessions are interactive only/i.test(message)) {
+    return message;
+  }
+  return (
+    `this session cannot be messaged: "${sessionId}" is not a cloud session id, and ` +
+    'the only documented write path takes one. The flags are correct — the id is the problem. ' +
+    'Turn on Remote Control in that session (/remote-control) to give it a cloud id.'
+  );
 }

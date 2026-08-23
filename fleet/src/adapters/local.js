@@ -59,6 +59,23 @@ const RECENT_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_TRANSCRIPTS = 40;
 
 /**
+ * Can the documented write path name this session?
+ *
+ * `claude -p "…" --cloud <id>` is the only documented way to send a message,
+ * and it takes a CLOUD session id. Given a bare local id the CLI refuses with
+ * "--cloud cannot be combined with --print. Cloud sessions are interactive
+ * only" — which reads like a flag problem and is really an addressing one.
+ *
+ * So a session discovered locally is writable only if it also exists on the
+ * cloud side, which is exactly what Remote Control does and what a cloud-shaped
+ * id indicates. Anything else Fleet can watch but not touch, and saying so up
+ * front is far better than a queued command that fails five times.
+ */
+export function isCloudAddressable(sessionId) {
+  return /^(session_|cse_)/.test(String(sessionId ?? ''));
+}
+
+/**
  * How the CLI names a project directory: the absolute path with every
  * non-alphanumeric run replaced by a dash.
  */
@@ -296,7 +313,11 @@ export function toRawRecord(agent, transcript, { remote = null, live = true, now
     // than failed — correct, because the machine may simply be asleep.
     connection_status: live ? 'connected' : 'disconnected',
     origin: agent.kind === 'background' ? 'background' : 'claude_code_cli',
-    tags: agent.kind ? [`kind:${agent.kind}`] : [],
+    // Only background agents are worth grouping by: `interactive` is the
+    // default and labelling three quarters of the board with it is noise.
+    tags: agent.kind === 'background' ? ['background'] : [],
+    // Watchable, not writable, unless it also exists on the cloud side.
+    addressable: isCloudAddressable(agent.sessionId),
     post_turn_summary: {
       status_category: needsAction ? 'need_input' : running ? 'working' : waiting ? 'review_ready' : 'done',
       status_detail: firstLine(transcript?.text) ?? null,
@@ -378,7 +399,18 @@ export class LocalAdapter {
    */
   #transcripts = new Map();
 
-  constructor({ exec = run, claudeBin = 'claude', projectsDir = join(homedir(), '.claude', 'projects') } = {}) {
+  /**
+   * @param {object} [options]
+   * @param {string} [options.claudeBin]     `FLEET_CLAUDE_BIN` when the CLI is
+   *   not on PATH under that name — a real situation on machines with several
+   *   installs, and the seam a full-stack test needs to stand up a fake fleet.
+   * @param {string} [options.projectsDir]   `FLEET_PROJECTS_DIR`, same reasons.
+   */
+  constructor({
+    exec = run,
+    claudeBin = process.env.FLEET_CLAUDE_BIN || 'claude',
+    projectsDir = process.env.FLEET_PROJECTS_DIR || join(homedir(), '.claude', 'projects'),
+  } = {}) {
     this.#exec = exec;
     this.#bin = claudeBin;
     this.#projectsDir = projectsDir;

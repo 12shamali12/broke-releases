@@ -626,6 +626,15 @@ export function createFleetServer({ poller, queue, devices, push = null, snooze 
         const session = requireSession(sessionId);
         const payload = validateCommand(segments[3], await readJson(req));
 
+        // Held and impossible are not the same thing. A disconnected session
+        // may wake up, so its command waits. A session with no cloud id can
+        // never be written to at all, and queueing for it would mean five
+        // retries, a failure notification, and a message the person believed
+        // was on its way.
+        if (session.reachableReason && / cloud session id/.test(session.reachableReason)) {
+          throw new HttpError(409, session.reachableReason);
+        }
+
         const command = await queue.enqueue({
           sessionId,
           verb: segments[3],
