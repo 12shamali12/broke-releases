@@ -548,3 +548,9 @@ kbd.hot { color: var(--ac); background: var(--acf); border-color: var(--acb); }
 .kv .v, .budget-row .b {
   overflow-wrap: anywhere;
 }
+
+/* A control that would write to a session that cannot receive one. Grey, not
+   merely quiet: the same treatment `.act.off` already had, applied to the
+   header chips, the Stop button and the composer snippets. */
+.chip.off, .snip.off, .stop.off { opacity: .45; cursor: not-allowed; }
+.chip.off:hover, .snip.off:hover { border-color: var(--bd); }

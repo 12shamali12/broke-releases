@@ -333,6 +333,33 @@ function pressable(attrs, onActivate) {
   };
 }
 
+/**
+ * A control that writes to a session.
+ *
+ * Everything that sends a command has to be dead on a session that cannot
+ * receive one: announced disabled, out of the tab order, and inert when
+ * clicked anyway. The Actions list did all three. The header's Stop, MODEL and
+ * EFFORT chips and the composer's snippets did none of them — so on a
+ * watch-only session, which is every session on a laptop, the cockpit offered
+ * five working-looking controls and clicking any of them posted a command that
+ * came back 409. The phone had this right; three places in the same file did
+ * not, which is what a helper is for.
+ *
+ * `also` is for a control with a second condition of its own — Stop needs the
+ * session to be running as well as writable.
+ */
+function writeControl(attrs, session, onActivate, { also = true } = {}) {
+  const off = !session.reachable || !also;
+  return pressable({
+    ...attrs,
+    class: `${attrs.class ?? ''}${off ? ' off' : ''}`.trim(),
+    // The real reason, on hover, rather than a control that is merely grey.
+    title: off && !session.reachable ? (session.reachableReason ?? 'this session cannot be messaged') : (attrs.title ?? null),
+    'aria-disabled': off ? 'true' : attrs['aria-disabled'] ?? null,
+    tabindex: off ? '-1' : attrs.tabindex ?? '0',
+  }, (event) => { if (!off) onActivate(event); });
+}
+
 function ago(ms) {
   if (ms == null) return '—';
   const s = Math.round(ms / 1000);
@@ -432,6 +459,21 @@ function bumpSize(delta) {
 // ---------------------------------------------------------------- commands
 
 async function dispatch(sessionId, verb, payload) {
+  // The last gate, and the one that covers the paths no disabled attribute
+  // can. Every keyboard shortcut reaches this directly: esc sends /stop from
+  // anywhere by design, ⌘⏎ sends the composer, ⌘M and ⌘E open menus whose
+  // items dispatch. Greying the buttons left all of those live — measured in a
+  // browser, five commands still went out on a watch-only session, each one a
+  // 409 and a toast that reads like a bug.
+  //
+  // Refused here rather than at each call site: a helper you have to remember
+  // to use is a helper that gets forgotten, which is exactly how the header
+  // chips and the composer snippets came to be missing one.
+  const session = active().find((s) => s.id === sessionId);
+  if (session && !session.reachable) {
+    toast(session.reachableReason ?? 'this session cannot be messaged');
+    return null;
+  }
   try {
     const result = await api(`/v1/fleet/${encodeURIComponent(sessionId)}/${verb}`, {
       method: 'POST',
@@ -1027,36 +1069,36 @@ function sessionHead(s) {
     h('span', { class: 'grow' }),
 
     h('div', { style: 'position:relative' },
-      h('div', pressable({
+      h('div', writeControl({
         class: `chip act${state.menu === 'model' ? ' open' : ''}`,
         'aria-haspopup': 'listbox',
         'aria-expanded': String(state.menu === 'model'),
         'aria-label': `Model, currently ${short(s.modelId)}`,
-      }, () => { state.menu = state.menu === 'model' ? null : 'model'; render(); }),
+      }, s, () => { state.menu = state.menu === 'model' ? null : 'model'; render(); }),
         h('span', { class: 'lbl' }, 'MODEL'), h('span', { class: 'val' }, short(s.modelId)), h('span', { class: 'k' }, '⌘M')),
       state.menu === 'model' ? modelMenu(s) : null),
 
     h('div', { style: 'position:relative' },
-      h('div', pressable({
+      h('div', writeControl({
         class: `chip act${state.menu === 'effort' ? ' open' : ''}`,
         'aria-haspopup': 'listbox',
         'aria-expanded': String(state.menu === 'effort'),
         'aria-label': `Reasoning effort, currently ${s.effort ?? 'unknown'}`,
-      }, () => { state.menu = state.menu === 'effort' ? null : 'effort'; render(); }),
+      }, s, () => { state.menu = state.menu === 'effort' ? null : 'effort'; render(); }),
         h('span', { class: 'lbl' }, 'EFFORT'), h('span', { class: 'val' }, s.effort ?? '—'), h('span', { class: 'k' }, '⌘E')),
       state.menu === 'effort' ? effortMenu(s) : null),
 
     h('div', { style: 'width:1px;height:18px;background:var(--bd)' }),
 
-    h('div', pressable({
-      class: `stop${running ? ' armed' : ''}`,
+    h('div', writeControl({
+      class: `stop${running && s.reachable ? ' armed' : ''}`,
       // Nothing to stop is not the same as a button that ignores you: it is
       // announced disabled and drops out of the tab order, so tabbing along a
       // header of idle sessions does not land on a control that does nothing.
-      'aria-disabled': running ? null : 'true',
-      tabindex: running ? '0' : '-1',
-      'aria-label': running ? `Stop ${s.title}` : `${s.title} is not running`,
-    }, () => running && dispatch(s.id, 'send', { text: '/stop' })),
+      // A running session that cannot be messaged is the same case again, and
+      // for a while it was the one that still looked armed.
+      'aria-label': !s.reachable ? `${s.title} cannot be messaged` : running ? `Stop ${s.title}` : `${s.title} is not running`,
+    }, s, () => dispatch(s.id, 'send', { text: '/stop' }), { also: running }),
       svg('<rect x="6" y="6" width="12" height="12" rx="2"/>', 'ico'), 'Stop',
        h('span', { class: 'k', style: running ? 'color:var(--onac);border-color:var(--onac)' : '' }, 'esc')),
 
@@ -1197,7 +1239,7 @@ function composer(s) {
     h('div', { class: 'snips' },
       h('span', { style: 'font-size:10px;color:var(--ft);letter-spacing:.04em' }, 'SNIPPETS'),
       ['continue', 'retry now', 'status?'].map((t) =>
-        h('span', pressable({ class: 'snip', 'aria-label': `Send "${t}"` }, () => dispatch(s.id, 'send', { text: t })), t)),
+        h('span', writeControl({ class: 'snip', 'aria-label': `Send "${t}"` }, s, () => dispatch(s.id, 'send', { text: t })), t)),
       h('span', { class: 'grow' }),
       h('span', pressable({ style: 'font-size:10px;color:var(--ft);cursor:pointer', 'aria-label': 'All keyboard shortcuts' },
         () => openOverlay('keys')), '⌘/ all shortcuts')));

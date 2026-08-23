@@ -553,6 +553,51 @@ for (const client of CLIENTS) {
   });
 }
 
+for (const client of CLIENTS) {
+  test(`${client.name}: no command can be sent to a session that cannot receive one`, async () => {
+    // Disabling the buttons is not enough, and this is not a theory: measured
+    // in a browser against a real watch-only session, with every button
+    // correctly greyed, five commands still went out — esc sends /stop from
+    // anywhere by design, ⌘⏎ sends the composer, and ⌘M and ⌘E open menus
+    // whose items dispatch. Each one came back 409.
+    //
+    // So the refusal lives in `dispatch`, which every path goes through.
+    const src = await read(client.js);
+    const at = src.indexOf('async function dispatch(');
+    assert.ok(at !== -1, 'every command goes through one function');
+    const body = src.slice(at, at + 1400);
+    const guard = body.indexOf('reachable');
+    const request = body.indexOf('await api(');
+    assert.ok(guard !== -1, 'and that function checks whether the session can be messaged');
+    assert.ok(guard < request, 'before it makes the request, not after');
+    assert.match(body.slice(guard, request), /return null|return;/, 'and refuses rather than continuing');
+  });
+}
+
+test('the cockpit has one helper for a control that writes, and uses it everywhere', async () => {
+  // The header's Stop, MODEL and EFFORT chips and the composer's snippets were
+  // each hand-rolled with `pressable`, and each was missing the guard the
+  // Actions list had. A helper you have to remember to use is a helper that
+  // gets forgotten, so the ones that write are pinned by name.
+  const src = await read('web-cockpit/cockpit.js');
+  assert.match(src, /function writeControl\(/, 'one place decides what a writing control looks like');
+
+  // Every dispatch inside a control's own attributes has to come from it.
+  for (const [name, marker] of [
+    ['the Stop button', "class: `stop${"],
+    ['the model chip', "'aria-haspopup': 'listbox',\n        'aria-expanded': String(state.menu === 'model')"],
+    ['the effort chip', "'aria-expanded': String(state.menu === 'effort')"],
+    ['the composer snippets', "class: 'snip'"],
+  ]) {
+    const at = src.indexOf(marker.replace(/\\n/g, '\n'));
+    assert.ok(at !== -1, `${name} is still recognisable`);
+    // Walk back to the call that opened this attribute object.
+    const opener = src.lastIndexOf('Control(', at) > src.lastIndexOf('pressable(', at)
+      ? 'writeControl' : 'pressable';
+    assert.equal(opener, 'writeControl', `${name} must be built with writeControl, not pressable`);
+  }
+});
+
 test('both clients carry the same shared helpers', async () => {
   const missing = [];
   for (const client of CLIENTS) {

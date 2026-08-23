@@ -289,6 +289,18 @@ function disconnect() {
  * time it was queued, rather than disappearing.
  */
 async function dispatch(sessionId, verb, payload, label) {
+  // Refused before it can be held. Every control that writes is already
+  // disabled on a session that cannot receive one, but the offline path makes
+  // that guard load-bearing in a way it should not be: a network error has no
+  // status, so it lands in the outbox under "Held — will send when your laptop
+  // is back", and for a watch-only session that sentence can never come true.
+  // One place to say no beats remembering to disable every future button.
+  const session = (state.fleet?.sessions ?? []).find((s) => s.id === sessionId);
+  if (session && session.reachable === false) {
+    toast(session.reachableReason ?? 'this session cannot be messaged');
+    return null;
+  }
+
   const entry = { id: crypto.randomUUID(), sessionId, verb, payload, label, queuedAt: Date.now() };
   try {
     const result = await api(`/v1/fleet/${encodeURIComponent(sessionId)}/${verb}`, {
