@@ -192,3 +192,39 @@ test('composite falls back to the slow reader when the fast one breaks', async (
   clock += 6 * 60_000;
   assert.equal(adapter.readerState.degraded, false, 'but it is retried once the cool-off elapses');
 });
+
+test('a failed command names the session it was for', async () => {
+  // The queue knows the command; only the poller knows the session. Without
+  // the join, the push read "The send to Fleet failed" and `fleet watch`
+  // printed the line with no name — for the one event where which session
+  // matters most, because it is the message you believed you had sent.
+  const dir = await mkdtemp(join(tmpdir(), 'fleet-poller-'));
+  try {
+    const queue = await CommandQueue.open({ path: join(dir, 'q.json'), maxAttempts: 1 });
+    const reader = new FixtureAdapter({ snapshots: SNAPSHOTS });
+    const poller = new Poller({
+      adapter: {
+        name: 'fixture',
+        capabilities: { read: true, write: true },
+        list: () => reader.list(),
+        send: async () => { throw new Error('Session expired.'); },
+        probe: () => reader.probe(),
+      },
+      queue,
+    });
+
+    await poller.tick();
+    const target = poller.fleet.sessions.find((s) => s.reachable);
+    await queue.enqueue({ sessionId: target.id, verb: 'send', payload: { text: 'hi' }, origin: 'test' });
+
+    const events = [];
+    poller.on('event', (e) => events.push(e));
+    await poller.drainCommands();
+
+    const failed = events.find((e) => e.type === 'command.failed');
+    assert.ok(failed, 'the failure is reported');
+    assert.equal(failed.title, target.title);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

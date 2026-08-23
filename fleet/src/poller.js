@@ -159,7 +159,14 @@ export class Poller extends EventEmitter {
         results.push({ command: sent, ok: true });
       } catch (err) {
         const { command: updated, event } = await this.#queue.markAttemptFailed(command.id, err);
-        if (event) this.emit('event', event);
+        if (event) {
+          // The queue knows the command; only the poller knows the session it
+          // was for. Without this the notification read "The send to Fleet
+          // failed" and `fleet watch` printed the line with no name at all —
+          // for the one event where knowing which session matters most,
+          // because it is the message you thought you had sent.
+          this.emit('event', { ...event, title: session?.title ?? null });
+        }
         this.emit('command', { command: updated, ok: false, error: err.message });
         results.push({ command: updated, ok: false, error: err.message });
       }
