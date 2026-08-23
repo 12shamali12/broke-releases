@@ -512,6 +512,31 @@ const onClaudeAi = (s) => /^session_[A-Za-z0-9]{4,}$/.test(String(s?.id ?? ''));
 const resumeCommand = (s) =>
   s?.cwd ? `cd ${s.cwd} && claude --resume ${s.id}` : `claude --resume ${s.id}`;
 
+/**
+ * The webfont, loaded after first paint instead of before it.
+ *
+ * As a `<link rel="stylesheet">` in the head this is render-blocking, and
+ * measured here: 12459ms to DOMContentLoaded when fonts.googleapis.com hangs,
+ * against 54ms when it fails fast. Two hundred times slower, and not a rare
+ * case — a captive-portal Wi-Fi, a corporate firewall, a plane, or simply
+ * being offline all produce it.
+ *
+ * It is worst in exactly the situation the offline cache exists for: fleetd
+ * unreachable, board served from localStorage, and the app still sitting on a
+ * blank screen for twelve seconds waiting for a font.
+ *
+ * Added from JavaScript because the CSP has no `unsafe-inline` for scripts, so
+ * the usual `media="print" onload="this.media='all'"` trick is refused. Every
+ * family has a real fallback stack, so the first paint is correct and the
+ * webfont swaps in when it arrives — or never, which is fine.
+ */
+function loadWebfont(href) {
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = href;
+  document.head.append(link);
+}
+
 function contextFill(s) {
   const used = s.contextUsed;
   if (!s.contextMax || !Number.isFinite(used)) {
@@ -1178,7 +1203,8 @@ function viewSettings() {
       h('button', {
         id: `theme-${t}`,
         class: 'chip', 'aria-pressed': String(state.settings.theme === t),
-        onclick: () => { state.settings.theme = t; store.set(LS.settings, state.settings); applyTheme(); render(); },
+        onclick: () => { state.settings.theme = t; store.set(LS.settings, state.settings); applyTheme();
+loadWebfont('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap'); render(); },
       }, t)));
 
   return [

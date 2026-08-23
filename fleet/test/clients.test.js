@@ -409,3 +409,25 @@ for (const client of CLIENTS) {
     assert.match(src, /claude --resume/, 'and offer the way back that does work');
   });
 }
+
+for (const client of CLIENTS) {
+  test(`${client.name}: text a session wrote cannot push the layout sideways`, async () => {
+    // A status line is whatever the model typed — a URL, a stack trace, a
+    // base64 blob with no space in it. Measured in a real browser: 1250px of
+    // content inside a 287px panel, running off the side of the screen. Every
+    // multi-line place that renders session text has to break anywhere rather
+    // than trusting it to contain spaces.
+    const css = await read(client.css);
+    const rules = [...css.matchAll(/([^{}]+)\{([^}]*overflow-wrap:\s*anywhere[^}]*)\}/g)];
+    assert.ok(rules.length, 'the stylesheet must break unbroken text somewhere');
+
+    const covered = rules.map((r) => r[1]).join(' ');
+    // The two shapes that carry session prose in every view.
+    const needed = client.name === 'phone'
+      ? ['.need .body', '.detail']
+      : ['.need .txt', '.tile .body'];
+    for (const selector of needed) {
+      assert.ok(covered.includes(selector), `${selector} renders session text and can overflow`);
+    }
+  });
+}

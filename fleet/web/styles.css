@@ -357,3 +357,15 @@ nav .ico { width: 19px; height: 19px; }
     -45deg, var(--bd), var(--bd) 3px, transparent 3px, transparent 6px);
 }
 .meter.unknown > i { display: none; }
+
+/* ---- text a session wrote ----
+   Whatever the model typed: a URL, a stack trace, a base64 blob with no space
+   in it. Measured in the cockpit at 1250px of content in a 287px panel; the
+   phone has the same shapes and less room to lose. Single-line places already
+   ellipsis; these are the ones that wrap. */
+.need .body, .detail, .yournote,
+.timeline .what,
+.event .body, .event .title,
+#toast {
+  overflow-wrap: anywhere;
+}

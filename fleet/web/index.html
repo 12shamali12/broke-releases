@@ -13,7 +13,9 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<!-- The webfont is loaded from JavaScript after first paint. As a link here it
+     is render-blocking: 12459ms to DOMContentLoaded when Google Fonts hangs,
+     54ms when it fails fast. See loadWebfont(). -->
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>

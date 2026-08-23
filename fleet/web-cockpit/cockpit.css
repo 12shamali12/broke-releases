@@ -534,3 +534,17 @@ kbd.hot { color: var(--ac); background: var(--acf); border-color: var(--acb); }
     -45deg, var(--bd), var(--bd) 3px, transparent 3px, transparent 6px);
 }
 .meter.unknown > i { display: none; }
+
+/* ---- text a session wrote ----
+   A status line is whatever the model typed: a URL, a stack trace, a base64
+   blob, a 4KB token with no space in it. Measured at 1250px of content inside
+   a 287px panel, running off the side of the screen. Every multi-line place
+   that renders session-authored text breaks anywhere rather than trusting it
+   to contain spaces. Single-line places already ellipsis. */
+.need .txt,
+.tile .body, .tile .warn, .tile .tool,
+.row .rownote,
+.hit .nm, .hit .sb,
+.kv .v, .budget-row .b {
+  overflow-wrap: anywhere;
+}
