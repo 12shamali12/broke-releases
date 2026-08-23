@@ -443,7 +443,12 @@ switch (command) {
       // sessions, and doctor just said how many.
       const seen = checks.find((c) => c.name === 'sessions visible');
       console.log(`  ${C.ok}Ready.${C.off} ${C.dim}Next: node bin/fleetd.mjs${C.off}`);
-      if (seen?.state !== OK) {
+      // Branch on what is actually unknown. "The board will be empty" is a
+      // different sentence from "you can watch but not message", and printing
+      // the first over a machine that can see a session is simply false.
+      if (seen?.state === UNKNOWN && /0 can be messaged/.test(seen.detail ?? '')) {
+        console.log(`  ${C.dim}Watching works. Messaging does not, on this machine — see the note above.${C.off}`);
+      } else if (seen?.state !== OK) {
         console.log(`  ${C.dim}The board will be empty until a Claude Code session is running on this machine.${C.off}`);
       }
       console.log('');

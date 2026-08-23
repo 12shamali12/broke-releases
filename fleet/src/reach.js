@@ -84,9 +84,14 @@ export function reachOptions({ port = 8787, interfaces = networkInterfaces() } =
       key: 'tunnel',
       title: 'From anywhere',
       url: null,
-      cost: 'a tunnel (Cloudflare Tunnel, Tailscale) in front of loopback. Keeps the bind private and adds its own authentication.',
+      // `detail` says what the option is and `cost` says what it takes — the
+      // same order as the LAN entry above, and the order the caller prints
+      // them in. These two were the other way round, so the screen read
+      // "the only option that works off your network" before saying what the
+      // option was.
+      detail: 'a tunnel (Cloudflare Tunnel, Tailscale) in front of loopback — the only option that works off your network, and the only one to use on untrusted Wi-Fi',
+      cost: 'one more service to install and keep running, with its operator in the path. In exchange the bind stays private and the tunnel adds its own authentication.',
       available: true,
-      detail: 'the only option that works off your network, and the only one to use on untrusted Wi-Fi',
     },
   ];
 }

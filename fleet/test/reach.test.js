@@ -63,13 +63,27 @@ test('every option states what it costs, except the one that costs nothing', () 
 
   assert.equal(byKey.loopback.cost, null, 'staying on loopback costs nothing');
   assert.match(byKey.lan.cost, /network/, 'exposing to the LAN is a real decision');
-  assert.match(byKey.tunnel.cost, /tunnel/);
+  assert.match(byKey.tunnel.cost, /keep running/, 'running a tunnel is the cost; being able to reach it is the point');
 });
 
 test('the LAN option is unavailable, not fabricated, when there is no address', () => {
   const [, lan] = reachOptions({ interfaces: { lo: [iface('127.0.0.1', { internal: true })] } });
   assert.equal(lan.available, false);
   assert.equal(lan.url, null, 'never invent a URL that cannot work');
+});
+
+test('every option says what it is before it says what it takes', () => {
+  // The caller prints `detail` then `cost`. The tunnel entry had them the
+  // other way round, so the screen read "the only option that works off your
+  // network" before naming the option — an answer ahead of its question.
+  for (const o of reachOptions({ port: 8787 })) {
+    if (o.key === 'loopback') continue;   // a URL is its own description
+    assert.ok(o.detail, `${o.key} has to describe itself`);
+    assert.ok(o.cost, `${o.key} has to state its trade`);
+  }
+  const tunnel = reachOptions({ port: 8787 }).find((o) => o.key === 'tunnel');
+  assert.match(tunnel.detail, /tunnel/, 'the description names the thing');
+  assert.match(tunnel.cost, /install|running/, 'the trade is what it takes to run one');
 });
 
 test('the tunnel is always available, because it does not depend on this machine', () => {

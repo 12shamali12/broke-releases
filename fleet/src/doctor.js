@@ -205,6 +205,19 @@ export async function probeSessions(adapter) {
         'start a Claude Code session, then re-run — Fleet reads this machine only',
       );
     }
+    // Watching and messaging are different capabilities, and a machine where
+    // every session can be watched and none can be messaged is a machine where
+    // half the product does not work. That was reported as a plain tick
+    // followed by "Ready.", and the first anyone learned of it was a refused
+    // Reply. It is the single most important fact about this laptop, so it is
+    // not a tick — but nor is it a failure: watching a fleet is most of why
+    // this exists, and it works.
+    if (/\b0 can be messaged\b/.test(result.detail ?? '')) {
+      return check(
+        'sessions visible', UNKNOWN, result.detail,
+        'you can watch these, but not message them: the write path takes a cloud session id and every session here reports a local one',
+      );
+    }
     return check('sessions visible', OK, result.detail);
   } catch (err) {
     return check('sessions visible', UNKNOWN, cleanish(err), 'if this persists, run: claude agents --json');

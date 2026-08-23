@@ -279,6 +279,31 @@ test('no sessions is unknown, not a failure', async () => {
   assert.match(out.fix, /start a Claude Code session/);
 });
 
+test('a machine that can watch but not message says so, before you find out', async () => {
+  // Watching and messaging are different capabilities, and a laptop where
+  // every session can be watched and none can be messaged is a laptop where
+  // half the product does not work. That was a plain tick followed by
+  // "Ready.", and the first anyone learned of it was a refused Reply.
+  const out = await probeSessions({ probe: async () => ({ ok: true, detail: '4 session(s) · 0 can be messaged' }) });
+  assert.equal(out.state, UNKNOWN, 'not a tick — but not a failure either: watching is most of why this exists');
+  assert.match(out.fix, /watch/i);
+  assert.match(out.fix, /message/i);
+});
+
+test('one session that can be messaged is not the watch-only case', async () => {
+  for (const detail of ['4 session(s) · 1 can be messaged', '30 session(s) · 10 can be messaged']) {
+    const out = await probeSessions({ probe: async () => ({ ok: true, detail }) });
+    assert.equal(out.state, OK, `"${detail}" must not be read as the watch-only case`);
+  }
+});
+
+test('no sessions at all is answered as no sessions, not as watch-only', async () => {
+  // "0 session(s) · 0 can be messaged" satisfies both conditions, and the
+  // advice that helps is "start a session", not "you cannot message these".
+  const out = await probeSessions({ probe: async () => ({ ok: true, detail: '0 session(s) · 0 can be messaged' }) });
+  assert.match(out.fix, /start a Claude Code session/);
+});
+
 test('being unable to check is not the same as having checked', async () => {
   assert.equal((await probeSessions(null)).state, UNKNOWN);
   const threw = await probeSessions({ probe: async () => { throw new Error('boom'); } });
