@@ -129,6 +129,30 @@ export async function tailLines(path, bytes = TAIL_BYTES) {
  * waiting for", and that is the one piece of content this touches — it stays
  * in memory and is never written to any of Fleet's own files.
  */
+/**
+ * A millisecond count that could be a real moment in this session's life.
+ *
+ * Rejects NaN, negatives, the epoch, and anything in the future: all of them
+ * render as an idle time — "20688d", "-3h" — and all of them sort against
+ * every genuine session in the list.
+ */
+function plausibleTime(value, now) {
+  if (!Number.isFinite(value)) return null;
+  // Claude Code did not exist in 2010, so anything older is a bad reading
+  // rather than a very patient session.
+  if (value < 1_262_304_000_000) return null;
+  // A little slack for clock skew between the file's mtime and this process.
+  if (value > now + 60_000) return null;
+  return value;
+}
+
+/** A timestamp we can do arithmetic with, or nothing. */
+function parsedTime(value) {
+  if (!value) return null;
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? at : null;
+}
+
 export function readTranscript(lines) {
   let last = null;
   let lastAssistant = null;
@@ -142,6 +166,11 @@ export function readTranscript(lines) {
     } catch {
       continue; // a truncated or partial line; skip it rather than fail
     }
+    // `JSON.parse` happily returns null, a number or an array — a line reading
+    // `null` is valid JSON, and reading `.type` off it threw, which took the
+    // poll with it. A transcript is a file Fleet did not write; every line in
+    // it is a guess until proven otherwise.
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     if (entry.type !== 'assistant' && entry.type !== 'user') continue;
     last = entry;
     if (entry.type === 'assistant') {
@@ -162,7 +191,11 @@ export function readTranscript(lines) {
   const usage = (lastAssistant?.message ?? {}).usage ?? {};
 
   return {
-    at: last.timestamp ? Date.parse(last.timestamp) : null,
+    // Null rather than NaN. `Date.parse` on anything it does not understand
+    // gives NaN, which becomes NaN milliseconds of staleness, renders as
+    // "NaNh" on the board, and sorts unpredictably against every real session
+    // — a single bad line quietly poisoning the ordering of the whole fleet.
+    at: parsedTime(last.timestamp),
     cwd: last.cwd ?? null,
     branch: last.gitBranch ?? null,
     version: last.version ?? null,
@@ -288,7 +321,7 @@ export function trailingQuestion(text) {
  * invented — `normalizeSession` already handles absent fields, and a plausible
  * guess would be worse than a gap because nothing downstream could tell.
  */
-export function toRawRecord(agent, transcript, { remote = null, live = true, now = Date.now() } = {}) {
+export function toRawRecord(agent, transcript, { remote = null, live = true, now = Date.now(), mtime = null } = {}) {
   // Only a live process can be mid-turn. A transcript ending on a tool call
   // whose process has since exited was interrupted, not working.
   const running = live && (transcript?.stopReason === 'tool_use' || transcript?.lastSpeaker === 'user');
@@ -298,7 +331,21 @@ export function toRawRecord(agent, transcript, { remote = null, live = true, now
   // finished its turn. Without the platform's own summary there is no
   // `needs_action`, so the lane is review-ready rather than blocked — claiming
   // blocked would make notifications fire for every finished turn.
-  const at = transcript?.at ?? agent.startedAt ?? null;
+  // In order of how much each one actually knows: what the session last
+  // wrote, when its file last changed, when its process started.
+  //
+  // The file's mtime sits above `startedAt` because it is a fact about this
+  // conversation rather than about the process, and because it survives the
+  // case that produced "20688d idle" on a real board — a transcript whose last
+  // timestamp will not parse, falling through to a `startedAt` of 1, which is
+  // 1970. Anything that is not a finite, plausible millisecond count is
+  // ignored rather than propagated: a single unreadable line in one file must
+  // not reorder the whole fleet or fire a stalled alert for a session that is
+  // fine.
+  const at = plausibleTime(transcript?.at, now)
+    ?? plausibleTime(mtime, now)
+    ?? plausibleTime(agent.startedAt, now)
+    ?? null;
   const idleFor = at ? Math.max(0, now - at) : 0;
   const needsAction = needsActionFrom(transcript, { idleFor });
 
@@ -560,6 +607,9 @@ export class LocalAdapter {
           remote: await this.#remoteFor(cwd),
           live: running.has(agent.sessionId),
           now,
+          // Already known from the directory scan, and a better answer than
+          // the process start time when the transcript cannot supply one.
+          mtime,
         }),
       );
     }

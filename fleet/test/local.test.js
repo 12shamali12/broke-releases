@@ -754,3 +754,99 @@ test('a running session is shown however old its transcript is', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+// ------------------------------------------------- transcripts as found
+
+/**
+ * A transcript is a file on someone's laptop that Fleet did not write.
+ *
+ * These are the shapes a real `.jsonl` turns out to have — a truncated last
+ * line from a session that was killed mid-write, a blank line, an entry whose
+ * `content` is a bare string rather than a list, a timestamp that is not a
+ * date, a control byte. Every one was run against a real fleetd before being
+ * written down here, and none brought it down; this is the pin, not the
+ * discovery.
+ */
+test('nothing in a transcript can take the poller down', () => {
+  const hostile = [
+    '{"not closed": ',
+    'not json at all',
+    '',
+    '   ',
+    '{"type":"assistant"}',
+    '{"type":"assistant","message":null}',
+    '{"type":"assistant","message":{"content":"a string, not a list"}}',
+    '{"type":"assistant","message":{"content":[{"type":"text"}]}}',
+    '{"type":"assistant","message":{"content":[]}}',
+    '{"type":"assistant","timestamp":"not-a-date","message":{"content":[{"type":"text","text":"hi?"}]}}',
+    '\x00\x01\x02 binary',
+    '[]',
+    'null',
+    '42',
+  ];
+  for (const line of hostile) {
+    assert.doesNotThrow(() => readTranscript([line]), `threw on: ${JSON.stringify(line.slice(0, 40))}`);
+  }
+  // And one good line among all of them still comes through.
+  const t = readTranscript([...hostile, entry()]);
+  assert.equal(t.text, 'Done.');
+  assert.equal(t.model, 'claude-opus-5');
+});
+
+test('a session that prints a huge blob does not become the board', () => {
+  // 120KB of output with no newline in it would otherwise travel over SSE to
+  // every client, into localStorage, and onto a lock screen.
+  const t = readTranscript([entry({
+    message: { model: 'claude-opus-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'B'.repeat(120_000) }] },
+  })]);
+  const record = toRawRecord({ sessionId: 's-x', name: 'Noisy', cwd: '/home/dev/x' }, t);
+  const detail = record.post_turn_summary.status_detail;
+  assert.ok(detail.length <= 200, `${detail.length} characters onto a phone`);
+});
+
+test('an unparseable timestamp does not become an idle time', () => {
+  // `Date.parse` on nonsense gives NaN, and NaN milliseconds of staleness
+  // renders as "NaNh" and sorts unpredictably against every real session.
+  const t = readTranscript(['{"type":"assistant","timestamp":"not-a-date","message":{"content":[{"type":"text","text":"hi"}]}}']);
+  if (t?.at != null) assert.ok(Number.isFinite(t.at), 'a bad timestamp must not become NaN');
+});
+
+
+test('a timestamp nothing can parse does not become 56 years of idleness', () => {
+  // Seen on a real board: "20688d". The transcript's last timestamp would not
+  // parse, so it fell through to a `startedAt` the CLI reported as 1 — epoch
+  // plus a millisecond, 1970. That session sorts above every genuine one in
+  // "most stale", and is exactly the shape that fires a stalled alert.
+  const t = readTranscript([entry({ timestamp: 'whenever' })]);
+  const now = Date.parse('2026-08-23T04:00:00.000Z');
+  const record = toRawRecord(
+    { sessionId: 's-x', name: 'Broken', cwd: '/home/dev/x', startedAt: 1 },
+    t,
+    { now, mtime: now - 60_000 },
+  );
+  assert.equal(record.updated_at, new Date(now - 60_000).toISOString(),
+    'the file changed a minute ago, and that is the honest answer');
+});
+
+test('a start time from before Claude Code existed is not a reading', () => {
+  const now = Date.parse('2026-08-23T04:00:00.000Z');
+  const record = toRawRecord({ sessionId: 's-x', cwd: '/home/dev/x', startedAt: 1 }, null, { now });
+  assert.equal(record.updated_at, null, 'no answer beats a wrong one — the board renders a gap');
+});
+
+test('a timestamp from the future is not a reading either', () => {
+  // A file written by a machine with a skewed clock, or restored from a
+  // backup. Negative staleness renders as "-3h" and sorts below everything.
+  const now = Date.parse('2026-08-23T04:00:00.000Z');
+  const record = toRawRecord({ sessionId: 's-x', cwd: '/home/dev/x' }, null, { now, mtime: now + 86_400_000 });
+  assert.equal(record.updated_at, null);
+});
+
+test('a little clock skew between the file and this process is tolerated', () => {
+  // mtime and Date.now() come from different places and disagree by
+  // milliseconds constantly. Refusing those would throw away a good reading.
+  const now = Date.parse('2026-08-23T04:00:00.000Z');
+  const record = toRawRecord({ sessionId: 's-x', cwd: '/home/dev/x' }, null, { now, mtime: now + 2_000 });
+  assert.equal(record.updated_at, new Date(now + 2_000).toISOString());
+});
