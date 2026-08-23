@@ -1212,11 +1212,13 @@ function panel(s) {
 function wall() {
   return h('div', { class: 'wall' },
     h('div', { class: 'tiles' },
-      active().map((s) =>
-        h('div', pressable({
+      active().map((s) => {
+        const ctx = contextFill(s);
+        return h('div', pressable({
           class: `tile ${s.lane}${s.reachable ? '' : ' dead'}`,
           'aria-label': `${s.title}, ${s.reachable ? s.lane : (s.reachLabel ?? 'unreachable')}${
-            s.summary?.needsAction ? `, needs you: ${s.summary.needsAction}` : ''}`,
+            s.summary?.needsAction ? `, needs you: ${s.summary.needsAction}` : ''}${
+            ctx.known ? `, context ${ctx.label} full` : ''}`,
         }, () => { state.selected = s.id; state.view = 'cockpit'; render(); }),
           h('div', { class: 'th' },
             h('span', { class: `dot ${laneDot(s)}` }),
@@ -1241,7 +1243,18 @@ function wall() {
               !s.reachable ? 'ft' : s.lane === 'blocked' ? 'ac' : s.lane === 'ready' ? 'ok' : 'wk'})` },
               s.reachable ? s.lane : (s.reachLabel ?? 'unreachable')),
             h('span', { class: 'grow' }),
-            h('span', { style: 'font-family:var(--mono);font-size:9.5px;color:var(--ft)' }, short(s.modelId)))))));
+            // The wall is the view you read from across the room, and "which
+            // of these is about to run out of context" is exactly the kind of
+            // fact that belongs there rather than three clicks away. Only
+            // shown when there is a real reading behind it.
+            ctx.known
+              ? h('span', {
+                  style: `font-family:var(--mono);font-size:9.5px;color:var(--${ctx.hot ? 'ac' : 'ft'})`,
+                  title: 'of the context window used',
+                }, ctx.label)
+              : null,
+            h('span', { style: 'font-family:var(--mono);font-size:9.5px;color:var(--ft)' }, short(s.modelId))));
+      })));
 }
 
 // ---------------------------------------------------------------- overlays

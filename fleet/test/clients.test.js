@@ -485,3 +485,15 @@ for (const client of CLIENTS) {
     assert.match(line[0], /has been waiting/);
   });
 }
+
+test('the wall shows context pressure, since that is what a wall is for', async () => {
+  // The wall is the view you read from across the room. "Which of these is
+  // about to run out of context" belongs there rather than three clicks away
+  // — and it only became showable once the meter had a real number behind it.
+  const src = await read('web-cockpit/cockpit.js');
+  const wall = /function wall\(\)[\s\S]*?\n\}/.exec(src);
+  assert.ok(wall, 'the cockpit has a wall view');
+  assert.match(wall[0], /contextFill\(s\)/, 'from the same honest helper as everywhere else');
+  assert.match(wall[0], /ctx\.known\s*\n?\s*\?/, 'and shown only when there is a reading');
+  assert.match(wall[0], /ctx\.hot \? 'ac' : 'ft'/, 'a full window is worth a colour');
+});
