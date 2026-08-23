@@ -179,8 +179,12 @@ if (devices.isEmpty) {
       console.log(`      ${C.dim}then open ${lan.url} on the phone${C.off}`);
       console.log(`      ${C.dim}${lan.cost}${C.off}`);
     }
-    console.log(`    ${C.ok}·${C.off} anywhere:    ${C.dim}${tunnel.cost}${C.off}`);
-    console.log(`      ${C.dim}${tunnel.detail}${C.off}`);
+    // `detail` then `cost`, the same order `fleet reach` uses. These two
+    // printers had opposite orders, so fixing the field ordering in one place
+    // broke the wording in the other — which is the failure mode this whole
+    // codebase keeps meeting whenever the same thing is rendered twice.
+    console.log(`    ${C.ok}·${C.off} anywhere:    ${C.dim}${tunnel.detail}${C.off}`);
+    console.log(`      ${C.dim}${tunnel.cost}${C.off}`);
   }
   console.log('');
 } else {

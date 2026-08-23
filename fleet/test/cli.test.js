@@ -75,6 +75,31 @@ test('a snooze length it cannot read is refused, not defaulted', () => {
   }
 });
 
+test('both places that print a reach option print it in the same order', async () => {
+  // `fleet reach` and fleetd's startup banner render the same three options
+  // from the same data, in two hand-written printers. They had opposite field
+  // orders, so swapping `detail` and `cost` to fix the CLI silently inverted
+  // the daemon's banner — the same drift that has bitten the phone and the
+  // cockpit twice. Neither printer is worth extracting; agreeing is.
+  const order = (text) => {
+    const d = text.indexOf('.detail');
+    const c = text.indexOf('.cost');
+    assert.ok(d !== -1 && c !== -1, 'both fields are printed');
+    return d < c ? 'detail first' : 'cost first';
+  };
+  const cli = await readFile(join(ROOT, 'bin/fleet.mjs'), 'utf8');
+  const daemon = await readFile(join(ROOT, 'bin/fleetd.mjs'), 'utf8');
+
+  // The block in each file that prints the tunnel option.
+  const cliBlock = /for \(const o of reachOptions[\s\S]*?\n  \}/.exec(cli);
+  assert.ok(cliBlock, 'the CLI prints them in a loop');
+  const daemonBlock = /anywhere:[\s\S]{0,400}/.exec(daemon);
+  assert.ok(daemonBlock, 'the daemon prints the tunnel option on start');
+
+  assert.equal(order(daemonBlock[0]), order(cliBlock[0]),
+    'say what the option is, then what it takes — in both places or neither');
+});
+
 test('a board position resolves to that session', () => {
   assert.equal(resolveRef(sessions, '1').title, 'First');
   assert.equal(resolveRef(sessions, '3').title, 'Third');
