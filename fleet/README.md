@@ -617,6 +617,25 @@ first is a design change; the second is real work. Undecided — see
 - [x] 12 Notes, and a flake that was two real shutdown bugs
 - [x] 13 History and undo — what happened, and taking it back
 - [x] 14 A read path that works — `doctor`, and strategy D
-- [x] 15 Both clients driven in a real browser — the live stream had never
-      worked in one, three cockpit controls had no keyboard path, every icon
-      rendered at its intrinsic size, and you could pair exactly one device
+- [x] 15 Run it, don't reason about it — twenty bugs no unit test could see
+
+### What running it found
+
+Every bug in phase 15 came from doing the thing rather than reading the
+code: driving both clients in Chromium, pointing a real fleetd at a real
+fleet, and feeding it files it did not write. In rough order of how badly
+each one mattered:
+
+| | |
+|---|---|
+| The live stream had never worked in a browser | `EventSource` cannot send an `Authorization` header. Every other route authenticated, so the board loaded, showed real data, and silently never updated. |
+| You could pair exactly one device, ever | fleetd prints a code only when it has no devices, so pairing the CLI closed the door on the phone. |
+| The app claimed a message was sent | It was queued, and failing. The history said "You sent"; the toast said "Sent"; the API returns 202. |
+| Every icon rendered at 300×150 | No stylesheet ever sized them. The cockpit's search magnifier covered the session rail, which read as "the rail is empty". |
+| 12.5s to first paint with Google Fonts unreachable | A render-blocking third-party stylesheet, worst in exactly the offline case the PWA exists for. |
+| The context meter always read 0% | `contextUsed` is set by nothing. An empty bar says "plenty of room", which is the opposite of what you look at it to learn. |
+| One bad line could crash the poll | A transcript line reading `null` is valid JSON. So is `42`. |
+| Three cockpit controls had no keyboard path | Model, effort and stop — in a cockpit whose premise is that nothing needs the mouse. |
+
+The technique that found them is not clever: build a synthetic laptop,
+run the whole stack against it, open it in a browser, and look.

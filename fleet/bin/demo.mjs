@@ -55,7 +55,10 @@ function board(fleet) {
   for (const s of fleet.sessions.filter((x) => x.status !== 'archived')) {
     const mark = { blocked: '●', ready: '○', working: '◐' }[s.lane] ?? '·';
     const need = s.summary.needsAction ? ` → ${s.summary.needsAction}` : '';
-    const flag = s.reachable ? '' : `  ${C.dim}[unreachable]${C.off}`;
+    // The same word the rest of the product uses: watch only and disconnected
+    // are different situations, and a demo that flattens them is teaching the
+    // wrong thing about the one distinction this product turns on.
+    const flag = s.reachable ? '' : `  ${C.dim}[${s.reachLabel ?? 'unreachable'}]${C.off}`;
     console.log(`  ${mark} ${s.title.padEnd(20)} ${C.dim}${(s.modelId ?? '?').padEnd(17)}${C.off}${need}${flag}`);
   }
 }
@@ -83,7 +86,7 @@ try {
   const drained = await poller.drainCommands();
   for (const r of drained) {
     if (r.skipped) {
-      console.log(`  ${C.badge}HELD ${C.off} ${r.command.verb.padEnd(24)} ${C.dim}session unreachable — kept, not failed${C.off}`);
+      console.log(`  ${C.badge}HELD ${C.off} ${r.command.verb.padEnd(24)} ${C.dim}session ${unreachable.reachLabel ?? 'unreachable'} — kept, not failed${C.off}`);
     } else {
       console.log(`  ${C.ok}SENT ${C.off} ${r.command.verb.padEnd(24)} ${C.dim}${sent.at(-1)?.text}${C.off}`);
     }
