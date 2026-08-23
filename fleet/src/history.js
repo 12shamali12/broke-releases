@@ -73,7 +73,16 @@ const PHRASING = {
   // you need to remember four days later.
   'you.recalled': (e) => ({ text: e.detail ? `You recalled: ${e.detail}` : 'You recalled that message', tone: 'ft', actor: 'you' }),
 
-  'command.failed': (e) => ({ text: `A ${e.detail ?? 'command'} could not be delivered`, tone: 'ac', actor: 'system' }),
+  // The reason, not only the fact. This is the entry you read to find out why
+  // your message never arrived, and "A send could not be delivered" answers a
+  // question nobody was asking — the real one is whether to log in again, wait
+  // for the laptop, or give up on that session. The queue already carries the
+  // error; the history was dropping it on the floor.
+  'command.failed': (e) => ({
+    text: e.detail ? `Could not be delivered: ${e.detail}` : 'A command could not be delivered',
+    tone: 'ac',
+    actor: 'system',
+  }),
   'command.sent': (e) => ({ text: `Your ${e.detail ?? 'message'} was delivered`, tone: 'ok', actor: 'system' }),
 };
 
@@ -185,7 +194,9 @@ export class HistoryStore {
         event.type === 'session.blocked' ? event.needsAction
         : event.type === 'session.stalled' ? formatAge(event.staleFor)
         : event.type === 'session.reviewReady' ? event.detail
-        : event.type === 'command.failed' ? event.verb
+        // verb AND reason: "send — Session expired. Please run /login".
+        : event.type === 'command.failed'
+          ? [event.excerpt ? `"${event.excerpt}"` : event.verb, event.error].filter(Boolean).join(' — ')
         : event.to ?? null;
       this.record(event.sessionId, event.type, detail ?? null, event.at);
     });

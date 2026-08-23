@@ -219,3 +219,20 @@ test('every entry for something you asked for reads as a request, not a result',
     assert.match(text, /^You (queued|asked)/, `${type} reads as done rather than requested: "${text}"`);
   }
 });
+
+test('a failed delivery records why, not only that', async () => {
+  // This is the entry you read to find out why your message never arrived,
+  // and "A send could not be delivered" answers a question nobody asked. The
+  // real one is whether to log in again, wait for the laptop, or give up on
+  // that session — and the queue already knows.
+  const h = new HistoryStore({});
+  const poller = new EventEmitter();
+  h.attach(poller);
+  poller.emit('event', {
+    type: 'command.failed', sessionId: 's1', verb: 'send',
+    error: 'Session expired. Please run /login to sign in again.', at: 1,
+  });
+  const [entry] = h.for('s1');
+  assert.match(entry.text, /send/);
+  assert.match(entry.text, /Session expired/, 'the reason is the point of the entry');
+});

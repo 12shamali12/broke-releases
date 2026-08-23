@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { CommandQueue, FAILED, PENDING, SENT, backoffFor } from '../src/queue.js';
+import { CommandQueue, FAILED, PENDING, SENT, backoffFor, excerptOf } from '../src/queue.js';
 
 async function tempQueue(options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'fleet-queue-'));
@@ -199,4 +199,21 @@ test('the poller actually prunes, so the queue file cannot grow forever', async 
   } finally {
     await cleanup();
   }
+});
+
+test('a failed command names the message, not only the verb', async () => {
+  // Two undelivered sends to the same session otherwise produce two identical
+  // "a send could not be delivered" lines, and which of them did not arrive
+  // is the entire question.
+  assert.equal(excerptOf({ text: '  deploy   to staging  ' }), 'deploy to staging');
+  assert.equal(excerptOf({ focus: 'the importer work' }), 'the importer work');
+  assert.equal(excerptOf({}), null);
+  assert.equal(excerptOf(null), null);
+  assert.equal(excerptOf({ text: '   ' }), null, 'whitespace is not a message');
+});
+
+test('an excerpt is short by construction, because it reaches a lock screen', async () => {
+  const long = excerptOf({ text: 'x'.repeat(500) });
+  assert.ok(long.length <= 60, `${long.length} characters on a lock screen`);
+  assert.ok(long.endsWith('…'), 'and it says it was cut');
 });

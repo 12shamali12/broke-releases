@@ -21,6 +21,21 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 /** 2s, 8s, 30s, 2m — then give up and tell the person. */
 const BACKOFF_MS = [2_000, 8_000, 30_000, 120_000];
 
+/**
+ * Enough of a command to recognise it, and no more.
+ *
+ * Goes into a history entry and, through `command.failed`, onto a lock
+ * screen — so it is short by construction rather than by whoever renders it
+ * remembering to trim.
+ */
+export function excerptOf(payload, max = 60) {
+  const text = payload?.text ?? payload?.focus ?? payload?.model ?? payload?.effort ?? null;
+  if (typeof text !== 'string') return null;
+  const clean = text.trim().replace(/\s+/g, ' ');
+  if (!clean) return null;
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+}
+
 export function backoffFor(attempt) {
   return BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
 }
@@ -162,6 +177,11 @@ export class CommandQueue {
           sessionId: command.sessionId,
           commandId: command.id,
           verb: command.verb,
+          // Which message, not only that one failed. Two undelivered sends to
+          // the same session produce two identical "could not be delivered"
+          // lines otherwise, and "which of them didn't arrive" is the entire
+          // question. Truncated: this reaches a lock screen.
+          excerpt: excerptOf(command.payload),
           attempts: command.attempts,
           error: message,
           at: command.settledAt,

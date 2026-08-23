@@ -469,3 +469,23 @@ test('a digest of one is never made, whatever the threshold', () => {
   assert.equal(out[0].sessionId, 's1', 'without this the action buttons are dead');
   assert.equal(out[0].digest, undefined);
 });
+
+test('an undeliverable message is named on the lock screen', async () => {
+  // "A send failed" is not actionable when you sent three things today. The
+  // words you typed are what let you recognise which one never arrived.
+  const { body } = compose({
+    type: 'command.failed', title: 'Importer rewrite', verb: 'send', attempts: 5,
+    excerpt: 'use the staging endpoint', error: 'Session expired.',
+  });
+  assert.match(body, /use the staging endpoint/);
+  assert.match(body, /Importer rewrite/);
+  assert.match(body, /Session expired/);
+});
+
+test('a command with nothing quotable still says what failed', async () => {
+  const { body } = compose({
+    type: 'command.failed', title: 'Importer rewrite', verb: 'compact', attempts: 5,
+    error: 'Session expired.',
+  });
+  assert.match(body, /compact/);
+});

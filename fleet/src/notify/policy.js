@@ -69,7 +69,12 @@ export function compose(event, { attempt = 1 } = {}) {
     case 'command.failed':
       return {
         title: 'A command could not be delivered',
-        body: `The ${event.verb} to ${title} failed after ${event.attempts} attempts: ${event.error}`,
+        // Names the message where there is one. "A send failed" is not
+        // actionable when you sent three things today; the words you typed
+        // are what let you recognise it from the lock screen.
+        body: event.excerpt
+          ? `“${event.excerpt}” never reached ${title}, after ${event.attempts} attempts: ${event.error}`
+          : `The ${event.verb} to ${title} failed after ${event.attempts} attempts: ${event.error}`,
         sessionId: event.sessionId,
         // Never suppressed and never coalesced: a message you believed you
         // sent, that did not arrive, is the one failure this system cannot
