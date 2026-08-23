@@ -29,7 +29,9 @@ const BACKOFF_MS = [2_000, 8_000, 30_000, 120_000];
  * remembering to trim.
  */
 export function excerptOf(payload, max = 60) {
-  const text = payload?.text ?? payload?.focus ?? payload?.model ?? payload?.effort ?? null;
+  // Every verb's payload, in the order a person would recognise them by. A
+  // rename's new title is as much "which command was that" as a send's text.
+  const text = payload?.text ?? payload?.focus ?? payload?.title ?? payload?.model ?? payload?.effort ?? null;
   if (typeof text !== 'string') return null;
   const clean = text.trim().replace(/\s+/g, ' ');
   if (!clean) return null;

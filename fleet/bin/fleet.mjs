@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { ago, freshness, resolveRef } from '../src/cli-helpers.js';
 import { FAIL, OK, UNKNOWN, diagnose } from '../src/doctor.js';
 import { LocalAdapter } from '../src/adapters/local.js';
+import { excerptOf } from '../src/queue.js';
 import { reachOptions } from '../src/reach.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -95,6 +96,12 @@ async function apiTolerating(status, path, options = {}) {
   if (!res.ok) die(body?.error ?? `${res.status} ${res.statusText}`);
   return body;
 }
+
+/** The queue's own excerpt, quoted for a terminal. One rule, one place. */
+const excerpt = (payload) => {
+  const text = excerptOf(payload, 46);
+  return text ? `"${text}"` : null;
+};
 
 function die(message) {
   console.error(`${C.ac}fleet:${C.off} ${message}`);
@@ -568,11 +575,34 @@ switch (command) {
   }
 
   case 'queue': {
-    const { commands } = await api('/v1/commands');
-    if (!commands.length) console.log(`${C.dim}nothing queued${C.off}`);
+    // Titles, not ids. You read this screen when something failed, and
+    // "session_01RCDEMO…" answers none of the questions you have: which of
+    // your sessions, how long ago, and what did it say. The board is already
+    // being fetched to resolve refs everywhere else in this CLI; it costs one
+    // more request to make this legible.
+    const [{ commands }, board] = await Promise.all([
+      api('/v1/commands'),
+      api('/v1/fleet').catch(() => null),
+    ]);
+    if (!commands.length) {
+      console.log(`${C.dim}nothing queued${C.off}`);
+      break;
+    }
+    const titles = new Map((board?.sessions ?? []).map((s) => [s.id, s.title]));
+    const width = Math.min(20, Math.max(8, ...commands.slice(-20).map((c) => (titles.get(c.sessionId) ?? c.sessionId).length)));
+
     for (const c of commands.slice(-20)) {
       const colour = c.state === 'failed' ? C.ac : c.state === 'sent' ? C.ok : C.ft;
-      console.log(` ${colour}${c.state.padEnd(8)}${C.off} ${c.verb.padEnd(8)} ${C.dim}${c.sessionId.slice(0, 20)}… ${c.error ?? ''}${C.off}`);
+      // A session Fleet can no longer see is worth saying out loud: its
+      // command is still being retried at something that may not exist.
+      const name = titles.get(c.sessionId) ?? `${c.sessionId.slice(0, 18)} (gone)`;
+      const when = c.settledAt ?? c.queuedAt;
+      const age = when ? `${ago(Date.now() - when).padStart(4)} ` : '';
+      const tries = c.attempts > 1 ? `${C.dim}·${c.attempts} tries${C.off} ` : '';
+      console.log(
+        ` ${colour}${c.state.padEnd(8)}${C.off} ${c.verb.padEnd(7)} ${name.padEnd(width).slice(0, width)}`
+        + ` ${C.dim}${age}${C.off}${tries}${C.dim}${c.error ?? excerpt(c.payload) ?? ''}${C.off}`,
+      );
     }
     break;
   }

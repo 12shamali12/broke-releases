@@ -217,3 +217,17 @@ test('an excerpt is short by construction, because it reaches a lock screen', as
   assert.ok(long.length <= 60, `${long.length} characters on a lock screen`);
   assert.ok(long.endsWith('…'), 'and it says it was cut');
 });
+
+test('every verb has something recognisable to quote', async () => {
+  // The excerpt is what tells you which command a queue row or a failure
+  // notification is about, so a verb it cannot describe is a row you cannot
+  // identify. A rename's new title is as much an answer as a send's text.
+  assert.equal(excerptOf({ text: 'continue' }), 'continue');
+  assert.equal(excerptOf({ title: 'Importer rewrite v2' }), 'Importer rewrite v2');
+  assert.equal(excerptOf({ model: 'claude-opus-5' }), 'claude-opus-5');
+  assert.equal(excerptOf({ effort: 'max' }), 'max');
+  assert.equal(excerptOf({ focus: 'the migration' }), 'the migration');
+  // A compact with no focus genuinely has nothing to quote, and says so
+  // rather than inventing something.
+  assert.equal(excerptOf({}), null);
+});
