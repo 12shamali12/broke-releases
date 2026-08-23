@@ -825,25 +825,37 @@ function sessionHead(s) {
     h('span', { class: 'grow' }),
 
     h('div', { style: 'position:relative' },
-      h('div', {
+      h('div', pressable({
         class: `chip act${state.menu === 'model' ? ' open' : ''}`,
-        onclick: () => { state.menu = state.menu === 'model' ? null : 'model'; render(); },
-      }, h('span', { class: 'lbl' }, 'MODEL'), h('span', { class: 'val' }, short(s.modelId)), h('span', { class: 'k' }, '⌘M')),
+        'aria-haspopup': 'listbox',
+        'aria-expanded': String(state.menu === 'model'),
+        'aria-label': `Model, currently ${short(s.modelId)}`,
+      }, () => { state.menu = state.menu === 'model' ? null : 'model'; render(); }),
+        h('span', { class: 'lbl' }, 'MODEL'), h('span', { class: 'val' }, short(s.modelId)), h('span', { class: 'k' }, '⌘M')),
       state.menu === 'model' ? modelMenu(s) : null),
 
     h('div', { style: 'position:relative' },
-      h('div', {
+      h('div', pressable({
         class: `chip act${state.menu === 'effort' ? ' open' : ''}`,
-        onclick: () => { state.menu = state.menu === 'effort' ? null : 'effort'; render(); },
-      }, h('span', { class: 'lbl' }, 'EFFORT'), h('span', { class: 'val' }, s.effort ?? '—'), h('span', { class: 'k' }, '⌘E')),
+        'aria-haspopup': 'listbox',
+        'aria-expanded': String(state.menu === 'effort'),
+        'aria-label': `Reasoning effort, currently ${s.effort ?? 'unknown'}`,
+      }, () => { state.menu = state.menu === 'effort' ? null : 'effort'; render(); }),
+        h('span', { class: 'lbl' }, 'EFFORT'), h('span', { class: 'val' }, s.effort ?? '—'), h('span', { class: 'k' }, '⌘E')),
       state.menu === 'effort' ? effortMenu(s) : null),
 
     h('div', { style: 'width:1px;height:18px;background:var(--bd)' }),
 
-    h('div', {
+    h('div', pressable({
       class: `stop${running ? ' armed' : ''}`,
-      onclick: () => running && dispatch(s.id, 'send', { text: '/stop' }),
-    }, svg('<rect x="6" y="6" width="12" height="12" rx="2"/>', 'ico'), 'Stop',
+      // Nothing to stop is not the same as a button that ignores you: it is
+      // announced disabled and drops out of the tab order, so tabbing along a
+      // header of idle sessions does not land on a control that does nothing.
+      'aria-disabled': running ? null : 'true',
+      tabindex: running ? '0' : '-1',
+      'aria-label': running ? `Stop ${s.title}` : `${s.title} is not running`,
+    }, () => running && dispatch(s.id, 'send', { text: '/stop' })),
+      svg('<rect x="6" y="6" width="12" height="12" rx="2"/>', 'ico'), 'Stop',
        h('span', { class: 'k', style: running ? 'color:var(--onac);border-color:var(--onac)' : '' }, 'esc')),
 
     h('div', pressable({ class: 'chip act', 'aria-label': `Open ${s.title} on claude.ai` },
@@ -954,7 +966,11 @@ function panel(s) {
     id: 'note',
     placeholder: 'Your note — why this exists, what you tried, what you decided…',
     'aria-label': `Your note about ${s.title}`,
-    style: 'width:100%;min-height:44px;background:none;border:none;outline:none;resize:vertical;font:inherit;color:var(--dm)',
+    // The focus ring is deliberately left alone. The composer suppresses its
+    // own because its wrapper lights up on :focus-within; this field has no
+    // wrapper, so suppressing it left a keyboard user typing into a target
+    // with no indication they had reached it at all.
+    style: 'width:100%;min-height:44px;background:none;border:none;resize:vertical;font:inherit;color:var(--dm)',
     oninput: () => { state.noteDrafts[s.id] = note.value; },
     onblur: async () => {
       // On blur, not per keystroke: this is prose, and a write per character
@@ -1045,10 +1061,11 @@ function wall() {
   return h('div', { class: 'wall' },
     h('div', { class: 'tiles' },
       active().map((s) =>
-        h('div', {
+        h('div', pressable({
           class: `tile ${s.lane}${s.reachable ? '' : ' dead'}`,
-          onclick: () => { state.selected = s.id; state.view = 'cockpit'; render(); },
-        },
+          'aria-label': `${s.title}, ${s.reachable ? s.lane : 'unreachable'}${
+            s.summary?.needsAction ? `, needs you: ${s.summary.needsAction}` : ''}`,
+        }, () => { state.selected = s.id; state.view = 'cockpit'; render(); }),
           h('div', { class: 'th' },
             h('span', { class: `dot ${laneDot(s)}` }),
             h('span', { style: 'font-size:12px;font-weight:600;flex-grow:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, s.title),
@@ -1467,7 +1484,7 @@ function describe(e) {
 function pairView() {
   const input = h('input', {
     inputmode: 'numeric', maxlength: '6', placeholder: '000000',
-    style: 'font-family:var(--mono);font-size:24px;letter-spacing:.34em;text-align:center;width:100%;padding:14px;background:var(--s1);border:1px solid var(--bd2);border-radius:3px;color:var(--tx);outline:none',
+    style: 'font-family:var(--mono);font-size:24px;letter-spacing:.34em;text-align:center;width:100%;padding:14px;background:var(--s1);border:1px solid var(--bd2);border-radius:3px;color:var(--tx)',
   });
   return h('div', { style: 'flex-grow:1;display:flex;align-items:center;justify-content:center' },
     h('div', { style: 'width:380px' },

@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { callSites } from './support/callsites.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (p) => readFile(join(ROOT, p), 'utf8');
@@ -50,32 +51,51 @@ for (const client of CLIENTS) {
     // A non-button element with onclick and no keyboard path is unreachable by
     // keyboard and invisible to assistive tech. `pressable()` is the fix; this
     // asserts nothing bypasses it.
-    // `[^}]*` alone stops at the first `}`, which a template literal in an
-    // attribute value supplies early — that is how a click-only action list in
-    // the cockpit's panel went unnoticed by this very test. Allow one level of
-    // `${...}` nesting.
-    const pattern = /h\('(div|span|li|section)',\s*\{((?:[^{}]|\$\{[^{}]*\})*onclick(?:[^{}]|\$\{[^{}]*\})*)\}/g;
     const orphans = [];
-    for (const match of src.matchAll(pattern)) {
-      const [, tag, attrs] = match;
-      if (attrs.includes('onkeydown') || attrs.includes("role: 'button'")) continue;
+    for (const site of callSites(src, ['div', 'span', 'li', 'section'])) {
+      if (!/\bonclick\s*:/.test(site.attrs)) continue;
+      if (/\bonkeydown\s*:/.test(site.attrs)) continue;
+      if (/role:\s*'button'/.test(site.attrs)) continue;
+      // An `option` inside a listbox is reached by the listbox, not by itself:
+      // either roving tabindex, or a combobox moving `aria-activedescendant`.
+      // Both need the option to have an id or a tabindex, and an option with
+      // neither is genuinely unreachable — so that is what is checked, rather
+      // than waving through every `role: 'option'`.
+      if (/role:\s*'option'/.test(site.attrs) && /\b(id|tabindex):/.test(site.attrs)) {
+        assert.match(src, /aria-activedescendant|tabindex: selected/, 'an option is only reachable if something moves between options');
+        continue;
+      }
       // A scrim is deliberately mouse-only and marked aria-hidden: clicking the
       // backdrop is a shortcut for esc, which every overlay already handles.
-      // The attribute can fall outside the captured group when a handler body
-      // contains braces, so look at the whole call site.
-      const site = src.slice(match.index, match.index + match[0].length + 60);
-      if (site.includes("'aria-hidden': 'true'")) continue;
-      orphans.push(`${tag}: ${attrs.trim().slice(0, 70)}`);
+      if (site.attrs.includes("'aria-hidden': 'true'")) continue;
+      orphans.push(`${site.tag}: ${site.attrs.trim().replace(/\s+/g, ' ').slice(0, 80)}`);
     }
     assert.deepEqual(orphans, [], 'use pressable() so the keyboard can reach it');
   });
 
-  test(`${client.name}: the click-only check actually sees nested template literals`, async () => {
-    // A guard that silently matches nothing is worse than no guard. This is
-    // the exact shape that slipped past the first version of the pattern.
-    const sample = "h('div', { class: `act${off ? ' off' : ''}`, onclick: () => run() }, 'x')";
-    const pattern = /h\('(div|span|li|section)',\s*\{((?:[^{}]|\$\{[^{}]*\})*onclick(?:[^{}]|\$\{[^{}]*\})*)\}/g;
-    assert.equal([...sample.matchAll(pattern)].length, 1, 'the pattern must see through a template literal');
+  test(`${client.name}: every control that opens a menu says so`, async () => {
+    // A chip that opens a listbox and does not announce it reads to a screen
+    // reader as a button that does nothing — which is how it feels, because
+    // the menu it opened was never announced either.
+    const src = await read(client.js);
+    const missing = [];
+    for (const site of callSites(src, ['div', 'span', 'button'])) {
+      if (!/state\.menu\s*=\s*state\.menu ===/.test(site.attrs)) continue;
+      if (!site.attrs.includes('aria-expanded')) missing.push(site.attrs.trim().slice(0, 60));
+    }
+    assert.deepEqual(missing, [], 'a menu trigger needs aria-haspopup and aria-expanded');
+  });
+
+  test(`${client.name}: a control that does nothing is not a tab stop`, async () => {
+    // Tabbing along a header of idle sessions must not land on a Stop button
+    // that ignores you. aria-disabled without tabindex="-1" is exactly that.
+    const src = await read(client.js);
+    const stops = [];
+    for (const site of callSites(src, ['div', 'span', 'button'])) {
+      if (!site.attrs.includes('aria-disabled')) continue;
+      if (!/tabindex/.test(site.attrs)) stops.push(site.attrs.trim().slice(0, 60));
+    }
+    assert.deepEqual(stops, [], 'aria-disabled must come with tabindex -1');
   });
 
   test(`${client.name}: reduced motion covers animation, not just transition`, async () => {
@@ -167,3 +187,32 @@ test('the CSP allows the inline styles both clients actually use', async () => {
   assert.match(src, /"script-src 'self'"/);
   assert.doesNotMatch(src, /script-src[^"]*unsafe-inline/);
 });
+
+for (const client of CLIENTS) {
+  test(`${client.name}: nothing suppresses its focus ring without replacing it`, async () => {
+    // A field with `outline: none` and no compensating :focus-within on a
+    // wrapper is a target a keyboard user types into with no sign they got
+    // there. The cockpit's note field was exactly that.
+    const src = await read(client.js);
+    const css = await read(client.css);
+    const suppressors = [...src.matchAll(/outline:\s*none/g)].length
+      + [...css.matchAll(/outline:\s*none(?!\s*;?\s*})/g)].length;
+    if (!suppressors) return;
+    // Every suppression must be answered somewhere. `:focus:not(:focus-visible)`
+    // is the one legitimate blanket rule — it hides the ring for mouse clicks
+    // only, which is what :focus-visible exists for.
+    assert.match(css, /:focus-within/, 'a suppressed ring needs a replacement indicator');
+  });
+
+  test(`${client.name}: no inline outline:none survives in a field with no wrapper`, async () => {
+    const src = await read(client.js);
+    for (const site of callSites(src, ['textarea', 'input'])) {
+      if (!/outline:\s*none/.test(site.attrs)) continue;
+      // The composer is the exception and says so in the class it sits in.
+      assert.ok(
+        /composer|\.box/.test(src.slice(Math.max(0, site.index - 400), site.index)),
+        `a field suppresses its own ring with nothing to replace it: ${site.attrs.slice(0, 60)}`,
+      );
+    }
+  });
+}
