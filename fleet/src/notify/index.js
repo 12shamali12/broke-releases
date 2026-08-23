@@ -90,16 +90,25 @@ export class NotificationService {
    * Returns `this` so the daemon reads as one statement.
    */
   attach(poller) {
-    poller.on('event', (event) => {
-      // Acting is not the only way an alert stops being relevant: a session
-      // that unblocks on its own has answered the question itself.
-      if (event.type === 'session.unblocked' || event.type === 'session.vanished') {
-        this.#policy.acknowledge(event.sessionId);
-        return;
+    // A whole poll's events at once, not one at a time. Offering them
+    // separately makes the coalescing window close mid-batch — five waiting
+    // sessions become a digest of three plus two stragglers, and the digest's
+    // headline undercounts what is actually waiting. A cold start produces
+    // exactly that shape: everything already blocked arrives in one tick.
+    poller.on('tick', (events) => {
+      const offerable = [];
+      for (const event of events) {
+        // Acting is not the only way an alert stops being relevant: a session
+        // that unblocks on its own has answered the question itself.
+        if (event.type === 'session.unblocked' || event.type === 'session.vanished') {
+          this.#policy.acknowledge(event.sessionId);
+          continue;
+        }
+        offerable.push(event);
       }
-
-      const snoozed = this.#snooze ? !this.#snooze.allows(event) : false;
-      this.#deliver(this.#policy.offer(event, { snoozed }));
+      this.#deliver(this.#policy.offerAll(offerable, {
+        snoozed: (event) => (this.#snooze ? !this.#snooze.allows(event) : false),
+      }));
     });
 
     poller.on('fleet', (fleet) => {

@@ -15,10 +15,44 @@ const fleetB = normalizeFleet(SNAPSHOT_B, NOW);
 const events = diffFleet(fleetA, fleetB);
 const byType = (type) => events.filter((e) => e.type === type);
 
-test('a cold start emits nothing at all', () => {
-  // Otherwise eighteen sessions would each look like they just became
-  // whatever they are, and you would be pushed eighteen notifications.
-  assert.deepEqual(diffFleet(null, fleetA), []);
+test('a cold start tells you what is already waiting, and nothing else', () => {
+  // It used to emit nothing at all, for a good reason badly applied:
+  // eighteen sessions would each look like they just became whatever they
+  // are. But `session.blocked` fires only on the transition into blocked and
+  // `session.stalled` only on the poll where it crosses the threshold, so a
+  // session already past both at first sight trips neither — forever. Restart
+  // fleetd while five sessions are waiting and none of them ever alerts you
+  // again, which is the entire failure this product exists to prevent.
+  //
+  // Measured on a real board before this changed: five sessions needing an
+  // answer, one for seventy-five hours, zero events emitted.
+  const events = diffFleet(null, fleetA);
+  const actionable = fleetA.sessions.filter((s) => s.actionable);
+  assert.ok(actionable.length, 'the fixture has something waiting');
+
+  assert.deepEqual(
+    events.map((e) => e.type),
+    actionable.map(() => 'session.blocked'),
+    'only what needs you — no started, finished, appeared or model-changed',
+  );
+  for (const e of events) {
+    assert.equal(e.severity, SEVERITY.PUSH);
+    assert.equal(e.sinceStart, true, 'so everything downstream can say "has been waiting"');
+  }
+});
+
+test('a cold start dates a wait from when it started, not from breakfast', () => {
+  // Otherwise the metrics record a seventy-five-hour wait as beginning the
+  // moment fleetd was restarted, and the feed says "just now" about it.
+  const [event] = diffFleet(null, fleetA);
+  const session = fleetA.sessions.find((s) => s.id === event.sessionId);
+  assert.equal(event.at, fleetA.generatedAt - session.staleFor);
+  assert.equal(event.staleFor, session.staleFor);
+});
+
+test('a cold start with nothing waiting stays silent', () => {
+  const quiet = { ...fleetA, sessions: fleetA.sessions.map((s) => ({ ...s, actionable: false })) };
+  assert.deepEqual(diffFleet(null, quiet), []);
 });
 
 test('a session entering blocked with a stated need is a push', () => {

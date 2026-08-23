@@ -31,11 +31,18 @@ async function tempQueue(options = {}) {
   return { queue, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
-test('the first tick populates the fleet and emits nothing', async () => {
+test('the first tick populates the fleet and reports what is already waiting', async () => {
+  // Restarting fleetd must not lose the sessions that need you. Before this,
+  // the first tick emitted nothing and neither `session.blocked` nor
+  // `session.stalled` could ever fire for something already past both — so a
+  // restart made a waiting session silent for good.
   const poller = new Poller({ adapter: new FixtureAdapter({ snapshots: SNAPSHOTS }) });
   const { events } = await poller.tick();
-  assert.deepEqual(events, []);
   assert.equal(poller.fleet.counts.total, 4);
+
+  const waiting = poller.fleet.sessions.filter((s) => s.actionable);
+  assert.deepEqual(events.map((e) => e.type), waiting.map(() => 'session.blocked'));
+  for (const e of events) assert.equal(e.sinceStart, true);
 });
 
 test('the second tick emits the transitions between snapshots', async () => {

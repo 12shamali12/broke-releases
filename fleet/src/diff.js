@@ -16,6 +16,28 @@ export const SEVERITY = { PUSH: 'push', BADGE: 'badge', FEED: 'feed' };
 /** A blocked session untouched for this long is not waiting, it is forgotten. */
 export const STALL_AFTER_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * What fleetd found already waiting when it opened its eyes.
+ *
+ * Dated by when the session actually went quiet rather than by now, so the
+ * feed reads "3d" instead of "just now" and the metrics do not record a
+ * seventy-five-hour wait as having started at breakfast. `sinceStart` lets
+ * everything downstream say "has been waiting" rather than "just became".
+ */
+function firstSight(next, now) {
+  return next.sessions
+    .filter((session) => session.actionable)
+    .map((session) =>
+      event('session.blocked', SEVERITY.PUSH, session, {
+        at: session.staleFor != null ? now - session.staleFor : now,
+        needsAction: session.summary.needsAction,
+        detail: session.summary.detail,
+        staleFor: session.staleFor ?? null,
+        sinceStart: true,
+      }),
+    );
+}
+
 function event(type, severity, session, extra = {}) {
   return {
     type,
@@ -30,13 +52,28 @@ function event(type, severity, session, extra = {}) {
 /**
  * Compare two normalised fleets and return the events between them.
  *
- * `previous` may be null on first run — a cold start emits nothing, because
- * every session would otherwise look like it "just became" whatever it is and
- * you would be pushed eighteen notifications on startup.
+ * `previous` is null on the first run. That used to emit nothing at all, for a
+ * good reason badly applied: every session would look like it "just became"
+ * whatever it is, and you would be pushed eighteen notifications on startup.
+ *
+ * The cost of that silence was the entire product. Restart fleetd — a reboot,
+ * a closed lid, an upgrade, or simply starting it for the first time — while
+ * five sessions are waiting on you, and none of them ever produces an alert.
+ * `session.blocked` only fires on the transition into blocked, and
+ * `session.stalled` only on the poll where it crosses the threshold; a session
+ * already past both at first sight trips neither, forever. Measured on a real
+ * board: five sessions needing an answer, one of them for seventy-five hours,
+ * and zero events emitted.
+ *
+ * So a cold start now emits exactly one kind of event — the sessions that need
+ * you — and stays silent about everything else. The objection it was written
+ * against is real and is already solved a layer up: the notification policy
+ * coalesces three or more into a single digest, which is precisely what
+ * "eighteen notifications on startup" needs.
  */
 export function diffFleet(previous, next, { stallAfterMs = STALL_AFTER_MS } = {}) {
   const now = next.generatedAt;
-  if (!previous) return [];
+  if (!previous) return firstSight(next, now);
 
   const before = new Map(previous.sessions.map((s) => [s.id, s]));
   const events = [];

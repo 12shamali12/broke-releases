@@ -41,6 +41,9 @@ const FLUSH_EVERY_MS = 30_000;
  * session did, because that distinction is the entire value of this file.
  */
 const PHRASING = {
+  // No special wording for a cold-start blocked: the entry is recorded at the
+  // moment the session actually went quiet, not at the moment fleetd noticed,
+  // so "Blocked: …" dated three days ago already says the true thing.
   'session.blocked': (e) => ({ text: e.detail ? `Blocked: ${e.detail}` : 'Blocked, needing you', tone: 'ac', actor: 'session' }),
   'session.unblocked': () => ({ text: 'Stopped needing you', tone: 'ok', actor: 'session' }),
   'session.stalled': (e) => ({ text: `Still waiting after ${e.detail ?? 'a day'}`, tone: 'ac', actor: 'session' }),
@@ -191,7 +194,7 @@ export class HistoryStore {
     poller.on('event', (event) => {
       if (!RECORDED.has(event.type)) return;
       const detail =
-        event.type === 'session.blocked' ? event.needsAction
+        event.type === 'session.blocked' ? event.needsAction ?? event.detail
         : event.type === 'session.stalled' ? formatAge(event.staleFor)
         : event.type === 'session.reviewReady' ? event.detail
         // verb AND reason: "send — Session expired. Please run /login".

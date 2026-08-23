@@ -473,3 +473,15 @@ for (const client of CLIENTS) {
     assert.doesNotMatch(html, /onload=/);
   });
 }
+
+for (const client of CLIENTS) {
+  test(`${client.name}: the feed does not date an old wait to the last restart`, async () => {
+    // A cold start reports every session already waiting. Describing those as
+    // "is blocked" would say a three-day wait began when fleetd came up.
+    const src = await read(client.js);
+    const line = /'session\.blocked':[^\n]*/.exec(src);
+    assert.ok(line, 'both clients describe a blocked event');
+    assert.match(line[0], /sinceStart/, 'a session found already waiting reads differently');
+    assert.match(line[0], /has been waiting/);
+  });
+}

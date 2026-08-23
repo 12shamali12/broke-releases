@@ -130,6 +130,11 @@ export class Poller extends EventEmitter {
 
     this.emit('fleet', next);
     for (const event of events) this.emit('event', event);
+    // The same events again, as one batch, for anything that wants to decide
+    // about them together rather than one at a time. The notification policy
+    // does: five sessions offered separately produce a digest of three and
+    // then two stragglers, where five offered together produce one digest.
+    this.emit('tick', events);
     return events;
   }
 

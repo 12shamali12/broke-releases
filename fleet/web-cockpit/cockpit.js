@@ -1621,7 +1621,10 @@ function lookOverlay() {
 function describe(e) {
   const t = e.title ?? e.sessionId;
   return {
-    'session.blocked': `${t} is blocked`,
+    // `sinceStart` means fleetd found it already waiting when it started
+    // rather than watching it happen. "is blocked" would date a three-day
+    // wait to whenever the daemon last restarted.
+    'session.blocked': e.sinceStart ? `${t} has been waiting` : `${t} is blocked`,
     'session.stalled': `${t} has been stuck ${ago(e.staleFor)}`,
     'session.reviewReady': `${t} is ready for review`,
     'session.started': `${t} started working`,

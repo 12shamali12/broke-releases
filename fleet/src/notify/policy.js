@@ -39,6 +39,15 @@ export const DEFAULTS = {
   escalate: true,
 };
 
+/** "3 days", "7 hours", "20 minutes" — the unit a person would use. */
+function humanAge(ms) {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 90) return `${Math.max(1, minutes)} minutes`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hours`;
+  return `${Math.round(hours / 24)} days`;
+}
+
 /**
  * Compose the words.
  *
@@ -49,16 +58,23 @@ export const DEFAULTS = {
 export function compose(event, { attempt = 1 } = {}) {
   const title = event.title ?? 'Fleet';
   switch (event.type) {
-    case 'session.blocked':
+    case 'session.blocked': {
+      // "is blocked" claims it just happened. On a cold start it did not —
+      // fleetd has only now been able to look, and the session may have been
+      // waiting since Tuesday. Saying so is the difference between an alert
+      // that reads as news and one that reads as an accusation.
+      const age = event.staleFor != null ? ` for ${humanAge(event.staleFor)}` : '';
       return {
-        title: attempt === 1 ? `${title} is blocked` : `${title} is still blocked`,
+        title: event.sinceStart
+          ? `${title} has been waiting${age}`
+          : attempt === 1 ? `${title} is blocked` : `${title} is still blocked`,
         body: event.needsAction ?? 'It needs something from you.',
         sessionId: event.sessionId,
         urgent: true,
       };
+    }
     case 'session.stalled': {
-      const hours = Math.round((event.staleFor ?? 0) / 3_600_000);
-      const age = hours >= 48 ? `${Math.round(hours / 24)} days` : `${hours} hours`;
+      const age = humanAge(event.staleFor ?? 0);
       return {
         title: `${title} has been stuck ${age}`,
         body: event.needsAction ?? 'Still waiting on you.',
@@ -89,7 +105,13 @@ export function compose(event, { attempt = 1 } = {}) {
 
 /** Several things at once, said as one thing. */
 export function composeDigest(notifications) {
-  const names = notifications.map((n) => n.title.replace(/ is blocked$| is still blocked$/, ''));
+  // The session's name, not the sentence about it: "Docs cleanup, Importer
+  // rewrite and 3 more" rather than three clauses each ending in a different
+  // duration. Every title `compose` can produce has to be stripped here, which
+  // is why they are listed together.
+  const names = notifications.map((n) =>
+    n.title.replace(/ is blocked$| is still blocked$/, '').replace(/ has been waiting.*$/, ''),
+  );
   const shown = names.slice(0, 3).join(', ');
   const rest = names.length - 3;
   return {
@@ -132,7 +154,28 @@ export class NotificationPolicy {
    * Nothing is sent from inside this class — it decides, the caller delivers.
    * That split is what makes the policy testable without a push service.
    */
-  offer(event, { snoozed = false } = {}) {
+  /**
+   * Offer everything one poll produced, and decide once.
+   *
+   * `offer` flushes the moment the batch reaches the coalescing threshold,
+   * which is a latency win for events that trickle in and a splitter for
+   * events that arrive together. Five sessions offered in the same loop, with
+   * a threshold of three, sent a digest headed "3 sessions need you" and then
+   * two more notifications when the window expired: three buzzes describing
+   * one situation, and a headline that undercounted it.
+   *
+   * A cold start does exactly that — every session already waiting arrives in
+   * a single tick — so a caller that has the whole batch in hand says so, and
+   * gets one decision covering all of it.
+   */
+  offerAll(events, { snoozed = () => false } = {}) {
+    const out = [];
+    for (const event of events) out.push(...this.offer(event, { snoozed: snoozed(event), defer: true }));
+    out.push(...this.#flush());
+    return out;
+  }
+
+  offer(event, { snoozed = false, defer = false } = {}) {
     if (event.severity !== 'push') return [];
 
     const notification = compose(event);
@@ -157,7 +200,7 @@ export class NotificationPolicy {
       this.#arm(event, notification);
     }
 
-    return this.#hold(notification);
+    return this.#hold(notification, { defer });
   }
 
   /**
@@ -232,10 +275,13 @@ export class NotificationPolicy {
     });
   }
 
-  #hold(notification) {
+  #hold(notification, { defer = false } = {}) {
     const now = this.#now();
     this.#pending.push(notification);
     if (this.#pendingSince == null) this.#pendingSince = now;
+
+    // The caller has more of this batch to offer and will flush itself.
+    if (defer) return [];
 
     // Enough at once that a digest is clearly the right shape: send it now
     // rather than waiting out the rest of the window.

@@ -359,7 +359,7 @@ test('every notification carries its own token and the current badge count', asy
   const notify = new NotificationService({ push, config: { coalesceThreshold: 1 }, now: c.now }).attach(poller);
   try {
     poller.emit('fleet', { sessions: [{ id: 's1', actionable: true }, { id: 's2', actionable: true }] });
-    poller.emit('event', blocked('s1', 'Importer'));
+    poller.emit('tick', [blocked('s1', 'Importer')]);
 
     assert.equal(push.sent.length, 1);
     assert.ok(push.sent[0].token, 'without a token the action buttons cannot do anything');
@@ -377,7 +377,7 @@ test('an escalation is delivered with a fresh token, and stops at three', async 
     push, config: { coalesceThreshold: 1, escalateAfterMs: 1000, escalateAgainMs: 1000 }, now: c.now,
   }).attach(poller);
   try {
-    poller.emit('event', blocked('s1', 'Importer'));
+    poller.emit('tick', [blocked('s1', 'Importer')]);
     for (let i = 0; i < 6; i += 1) {
       c.advance(1001);
       notify.sweep();
@@ -403,8 +403,8 @@ test('a session unblocking on its own stops the escalation', async () => {
     push, config: { coalesceThreshold: 1, escalateAfterMs: 1000 }, now: c.now,
   }).attach(poller);
   try {
-    poller.emit('event', blocked('s1', 'Importer'));
-    poller.emit('event', { type: 'session.unblocked', severity: 'feed', sessionId: 's1', at: c.t });
+    poller.emit('tick', [blocked('s1', 'Importer')]);
+    poller.emit('tick', [{ type: 'session.unblocked', severity: 'feed', sessionId: 's1', at: c.t }]);
 
     c.advance(5000);
     notify.sweep();
@@ -422,7 +422,7 @@ test('replying from a notification queues, acknowledges, and never says sent', a
   const poller = new EventEmitter();
   const notify = new NotificationService({ push, queue, config: { coalesceThreshold: 1 }, now: c.now }).attach(poller);
   try {
-    poller.emit('event', blocked('s1', 'Importer'));
+    poller.emit('tick', [blocked('s1', 'Importer')]);
     const token = push.sent[0].token;
 
     const grant = notify.tokens.verify(token, 'reply');
@@ -446,7 +446,7 @@ test('the ceiling survives the whole assembled path', async () => {
   }).attach(poller);
   try {
     for (let i = 0; i < 50; i += 1) {
-      poller.emit('event', blocked(`s${i}`, `Session ${i}`));
+      poller.emit('tick', [blocked(`s${i}`, `Session ${i}`)]);
       c.advance(1100);
       notify.sweep();
     }
@@ -516,4 +516,54 @@ test('an undelivered message is never offered a snooze', () => {
 test('a blocked session is offered both, because both make sense there', () => {
   const n = compose({ type: 'session.blocked', title: 'Importer', sessionId: 's1', needsAction: 'which endpoint?' });
   assert.ok(!n.undeliverable, 'reply and snooze are exactly right for this one');
+});
+
+test('everything already waiting at startup is one notification, not three', async () => {
+  // The shape a cold start produces: every blocked session arrives in a single
+  // tick. Offered one at a time, the coalescing window closes mid-batch — five
+  // sessions became a digest headed "3 sessions need you" and then two more
+  // notifications when the window expired. Three buzzes for one situation, and
+  // a headline that undercounted what was waiting.
+  const c = clock();
+  const push = recorder();
+  const poller = new EventEmitter();
+  const notify = new NotificationService({ push, config: { quietHours: null }, now: c.now }).attach(poller);
+  try {
+    const waiting = ['Docs cleanup', 'Importer rewrite', 'Deploy runner', 'Widget build', 'Ledger tests'];
+    poller.emit('fleet', { sessions: waiting.map((_, i) => ({ id: `s${i}`, actionable: true })) });
+    poller.emit('tick', waiting.map((title, i) => ({
+      ...blocked(`s${i}`, title), sinceStart: true, staleFor: 3_600_000 * (i + 1),
+    })));
+
+    assert.equal(push.sent.length, 1, 'one notification for one situation');
+    assert.match(push.sent[0].title, /^5 sessions need you$/, 'and it counts all of them');
+    assert.equal(push.sent[0].digest.length, 5);
+  } finally {
+    notify.stop();
+  }
+});
+
+test('a digest lists names, not five sentences each ending in a duration', async () => {
+  const digest = composeDigest([
+    { title: 'Docs cleanup has been waiting for 3 days', sessionId: 'a', urgent: true },
+    { title: 'Importer rewrite has been waiting for 4 hours', sessionId: 'b', urgent: true },
+    { title: 'Deploy runner is blocked', sessionId: 'c', urgent: true },
+  ]);
+  assert.equal(digest.body, 'Docs cleanup, Importer rewrite, Deploy runner');
+});
+
+test('a session found already waiting says so, rather than claiming it just happened', () => {
+  // fleetd has only now been able to look. "Importer rewrite is blocked"
+  // reads as news that just broke; it may have been waiting since Tuesday.
+  const n = compose({
+    type: 'session.blocked', severity: 'push', sessionId: 's1',
+    title: 'Importer rewrite', needsAction: 'which endpoint?',
+    sinceStart: true, staleFor: 271_440_000,
+  });
+  assert.equal(n.title, 'Importer rewrite has been waiting for 3 days');
+});
+
+test('a session that blocks while you are watching still reads as news', () => {
+  const n = compose({ type: 'session.blocked', severity: 'push', sessionId: 's1', title: 'Importer rewrite' });
+  assert.equal(n.title, 'Importer rewrite is blocked');
 });

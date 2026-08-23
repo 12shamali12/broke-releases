@@ -988,7 +988,10 @@ function viewFeed() {
 function describe(e) {
   const title = e.title ?? e.sessionId;
   return {
-    'session.blocked': `${title} is blocked`,
+    // `sinceStart` means fleetd found it already waiting when it started
+    // rather than watching it happen. "is blocked" would date a three-day
+    // wait to whenever the daemon last restarted.
+    'session.blocked': e.sinceStart ? `${title} has been waiting` : `${title} is blocked`,
     'session.stalled': `${title} has been stuck ${ago(e.staleFor)}`,
     'session.reviewReady': `${title} is ready for review`,
     'session.started': `${title} started working`,
