@@ -1455,6 +1455,12 @@ function applyTheme() {
   else document.documentElement.setAttribute('data-theme', theme);
 }
 
+/** Everything focusable in the app, in document order. */
+function tabStops(root = document.getElementById('app') ?? document) {
+  return [...root.querySelectorAll('a[href], button, input, textarea, select, [tabindex]')]
+    .filter((el) => !el.disabled && el.getAttribute('tabindex') !== '-1' && el.getClientRects().length);
+}
+
 /**
  * Re-render without stealing what someone is doing.
  *
@@ -1470,6 +1476,11 @@ function preserveFocus(work, { keepScroll = true } = {}) {
   const end = isField ? active.selectionEnd : null;
   // Only worth keeping within one screen: a new screen starts at the top.
   const scroll = keepScroll ? (document.querySelector('.scroll')?.scrollTop ?? null) : null;
+  // A session card has no id, so restoring by id left every keyboard user on
+  // `body` after each poll — measured: tab to a card, wait 2.5s, focus gone.
+  // Position in the tab order is the fallback: if the board reordered under
+  // you, you land on a neighbour, which is what happens in any live list.
+  const stop = active && active !== document.body && !id ? tabStops().indexOf(active) : -1;
 
   work();
 
@@ -1477,7 +1488,13 @@ function preserveFocus(work, { keepScroll = true } = {}) {
     const next = document.querySelector('.scroll');
     if (next) next.scrollTop = scroll;
   }
-  if (!id) return;
+  if (!id) {
+    if (stop >= 0 && document.activeElement === document.body) {
+      const stops = tabStops();
+      stops[Math.min(stop, stops.length - 1)]?.focus({ preventScroll: true });
+    }
+    return;
+  }
   const restored = document.getElementById(id);
   if (!restored) return;
   restored.focus({ preventScroll: true });
@@ -1535,6 +1552,20 @@ function render() {
     // session view does for its history section — nests one level deeper than
     // a single flatten reaches.
     app.replaceChildren(...[body].flat(Infinity).filter(Boolean), ...(nav ? [nav] : []));
+
+    // The heading is where a view change parks focus, and it has to survive
+    // the next re-render or the anchor lasts a hundred milliseconds. It did
+    // not: `go('session', id)` kicks off `refreshHistory`, which resolves
+    // immediately after and renders again, and `preserveFocus` can only
+    // restore an element that has an id. So focus fell to `body` every time,
+    // which a keyboard user experiences as the app losing them on the way into
+    // a session — measured in a browser: activeElement BODY, heading present,
+    // tabindex never set.
+    const heading = app.querySelector('h1, h2');
+    if (heading) {
+      if (!heading.id) heading.id = 'view-heading';
+      heading.setAttribute('tabindex', '-1');
+    }
   }, { keepScroll: !changed });
 
   // Both cues are one-shot. Disarming after the DOM exists means the animation
@@ -1554,9 +1585,11 @@ function render() {
   // done anything is disorienting, and on iOS it can scroll the page.
   if (changed && render.lastKey !== undefined) {
     render.lastKey = key;
-    const heading = app.querySelector('h1, h2');
-    if (heading && !document.activeElement?.id) {
-      heading.setAttribute('tabindex', '-1');
+    const heading = document.getElementById('view-heading');
+    // Not over something a person is already on: `preserveFocus` may have put
+    // them back where they were, and taking that away is worse than saying
+    // nothing.
+    if (heading && document.activeElement === document.body) {
       heading.focus({ preventScroll: true });
     }
   } else if (changed) {
@@ -1604,6 +1637,30 @@ window.addEventListener('online', () => {
   refresh().then(flushOutbox).catch(() => {});
   render();
 });
+/**
+ * Escape goes back.
+ *
+ * The phone is mostly touched, but it is also opened on an iPad with a folio
+ * keyboard, and it is the surface a keyboard user reaches first. Tabbing into
+ * a session worked; there was no key that came back out, so the only way was
+ * to tab forward to the Back button. Escape was simply dead.
+ *
+ * In a text field it blurs instead. Losing a half-written reply to a stray
+ * Escape is exactly the kind of thing that stops someone trusting the box.
+ */
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const el = document.activeElement;
+  if (el && ['INPUT', 'TEXTAREA'].includes(el.tagName)) {
+    el.blur();
+    return;
+  }
+  if (['session', 'spawn'].includes(state.view)) {
+    e.preventDefault();
+    go('board');
+  }
+});
+
 window.addEventListener('offline', () => {
   state.online = false;
   render();

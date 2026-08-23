@@ -443,7 +443,7 @@ for (const client of CLIENTS) {
  * So the duplication is pinned: both clients must carry the same set, and
  * every one of them has a behavioural test above. This list is the contract.
  */
-const SHARED_HELPERS = ['contextFill', 'composerHint', 'onClaudeAi', 'resumeCommand', 'loadWebfont', 'duration', 'freshness'];
+const SHARED_HELPERS = ['contextFill', 'composerHint', 'onClaudeAi', 'resumeCommand', 'loadWebfont', 'duration', 'freshness', 'tabStops'];
 
 for (const client of CLIENTS) {
   test(`${client.name}: the metric that measures success can display success`, async () => {
@@ -595,6 +595,84 @@ test('the cockpit has one helper for a control that writes, and uses it everywhe
     const opener = src.lastIndexOf('Control(', at) > src.lastIndexOf('pressable(', at)
       ? 'writeControl' : 'pressable';
     assert.equal(opener, 'writeControl', `${name} must be built with writeControl, not pressable`);
+  }
+});
+
+for (const client of CLIENTS) {
+  test(`${client.name}: keyboard focus survives a re-render`, async () => {
+    // Both clients re-render on every poll and every stream event, and both
+    // restored focus only for an element with an id. A session card has none.
+    // Measured in a browser: tab to a card, wait one 2.5s poll, activeElement
+    // is `body`. Keyboard navigation was not awkward, it was impossible — you
+    // were returned to the top of the document every few seconds.
+    const src = await read(client.js);
+    assert.match(src, /function tabStops\(/, 'one definition of what counts as a stop');
+
+    // Restored by position, because an id built from a label containing
+    // "idle 2d" stops being stable the moment the clock moves.
+    assert.match(src, /tabStops\(\)\.indexOf\(/, 'the position before the re-render is recorded');
+    assert.match(src, /Math\.min\((focusStop|stop), stops\.length - 1\)/, 'and a shortened list lands on a neighbour, not nowhere');
+
+    // Never over someone who already has focus back.
+    assert.match(src, /document\.activeElement === document\.body/, 'only restore into a vacuum');
+  });
+}
+
+test('the phone parks focus somewhere that outlives the next render', async () => {
+  // `go('session', id)` starts `refreshHistory`, which resolves immediately
+  // and renders again. The heading focused by the view change had no id, so
+  // `preserveFocus` could not restore it and focus fell to `body` — an anchor
+  // that lasted about a hundred milliseconds. Measured: activeElement BODY,
+  // heading present, tabindex never set.
+  const src = await read('web/app.js');
+  assert.match(src, /heading\.id = 'view-heading'/, 'the anchor needs a stable id');
+  assert.match(src, /getElementById\('view-heading'\)/, 'and the view change focuses it by that id');
+  // Stamped inside the render, not only when the view changes: otherwise the
+  // second render drops the attribute again.
+  const stamp = src.indexOf("heading.id = 'view-heading'");
+  const focus = src.indexOf("getElementById('view-heading')");
+  assert.ok(stamp < focus, 'stamped before it is focused');
+});
+
+test('the phone has a key that comes back out of a session', async () => {
+  // Tabbing into a session worked; nothing came back out. The only way to the
+  // board was to tab forward to the Back button, and Escape was dead.
+  const src = await read('web/app.js');
+  const at = src.indexOf("addEventListener('keydown'");
+  assert.ok(at !== -1, 'the phone listens for keys at all');
+  const handler = src.slice(at, at + 700);
+  assert.match(handler, /Escape/);
+  // And it must not throw away a half-written reply.
+  const blur = handler.indexOf('blur()');
+  const back = handler.indexOf("go('board')");
+  assert.ok(blur !== -1 && back !== -1, 'both behaviours are present');
+  assert.ok(blur < back, 'a text field blurs; it does not navigate away from what you typed');
+  // And it goes back only from a screen there is somewhere to go back from.
+  assert.match(handler, /\['session', 'spawn'\]\.includes\(state\.view\)/,
+    'Escape on the board itself must do nothing, not re-render it');
+});
+
+test('a modal with nothing in it still traps Tab', async () => {
+  // The shortcuts sheet is all text — no button anywhere — so there was
+  // nothing for the trap to catch and Tab left on the first press. Measured:
+  // 22 presses, 22 escapes, while the palette and Appearance held.
+  const src = await read('web-cockpit/cockpit.js');
+  const at = src.indexOf("state.overlay && e.key === 'Tab'");
+  assert.ok(at !== -1, 'the trap exists');
+  const trap = src.slice(at, at + 900);
+  assert.match(trap, /if \(!stops\.length\)/, 'an empty modal is the case that was missing');
+  assert.match(trap, /preventDefault/);
+
+  // And focus has to start inside, or the first Tab is measured from outside.
+  const open = src.slice(src.indexOf('function openOverlay('), src.indexOf('async function refreshMetrics'));
+  assert.match(open, /tabStops\(box\)\[0\] \?\? box/, 'the sheet itself is the fallback when it holds no controls');
+
+  // Which means every sheet must be focusable.
+  const dialogs = [...src.matchAll(/role: 'dialog'[^)]*/g)];
+  assert.ok(dialogs.length >= 4, 'there are several');
+  for (const d of dialogs) {
+    if (d[0].includes("class: 'palette'") || src.slice(d.index - 40, d.index).includes("class: 'palette'")) continue;
+    assert.match(d[0], /tabindex: '-1'/, `a dialog that cannot hold focus: ${d[0].slice(0, 70)}`);
   }
 });
 

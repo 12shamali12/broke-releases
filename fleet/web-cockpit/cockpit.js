@@ -348,6 +348,20 @@ function pressable(attrs, onActivate) {
  * `also` is for a control with a second condition of its own — Stop needs the
  * session to be running as well as writable.
  */
+/**
+ * Everything focusable in the app, in document order.
+ *
+ * The same set the overlay's Tab trap walks, so the two agree about what
+ * counts as a stop — including the `aria-disabled` rows, which are focusable
+ * elements a keyboard must skip.
+ */
+function tabStops(root = document.getElementById('app') ?? document) {
+  // getClientRects rather than offsetParent: the overlays are position:fixed,
+  // and offsetParent is null for a fixed element itself.
+  return [...root.querySelectorAll('a[href], button, input, textarea, select, [tabindex]')]
+    .filter((el) => !el.disabled && el.getAttribute('tabindex') !== '-1' && el.getClientRects().length);
+}
+
 function writeControl(attrs, session, onActivate, { also = true } = {}) {
   const off = !session.reachable || !also;
   return pressable({
@@ -610,10 +624,17 @@ function onKey(e) {
   if (state.overlay && e.key === 'Tab') {
     const box = document.querySelector('.palette, .sheet, [role="dialog"]');
     if (box) {
-      // getClientRects rather than offsetParent: the overlays are
-      // position:fixed, and offsetParent is null for a fixed element itself.
-      const stops = [...box.querySelectorAll('a[href], button, input, textarea, select, [tabindex]')]
-        .filter((el) => !el.disabled && el.getAttribute('tabindex') !== '-1' && el.getClientRects().length);
+      // The same set the focus restore uses, from the same function: two
+      // hand-written copies of "what counts as a tab stop" is the drift this
+      // file has already suffered three times.
+      const stops = tabStops(box);
+      if (!stops.length) {
+        // Nothing inside to move to. Tab must still not leave: a modal you can
+        // tab out of is a modal only for the mouse.
+        e.preventDefault();
+        box.focus({ preventScroll: true });
+        return;
+      }
       if (stops.length) {
         const first = stops[0];
         const last = stops[stops.length - 1];
@@ -729,6 +750,14 @@ function openOverlay(name) {
   // Only asked for when the sheet that shows it opens.
   if (name === 'stats') refreshMetrics();
   render();
+  // Focus has to move inside, or a keyboard user is standing outside a modal
+  // they cannot see and their next Tab is in the page behind it. The shortcuts
+  // sheet is all text — no button anywhere — so there was nothing for the trap
+  // below to catch and Tab left on the first press, every time.
+  const box = document.querySelector('.palette, .sheet, [role="dialog"]');
+  if (box && !box.contains(document.activeElement)) {
+    (tabStops(box)[0] ?? box).focus({ preventScroll: true });
+  }
 }
 
 async function refreshMetrics() {
@@ -1513,7 +1542,7 @@ const KEYS = [
 function keysOverlay() {
   return [
     h('div', { class: 'scrim', onclick: () => { closeOverlay(); }, 'aria-hidden': 'true' }),
-    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Keyboard shortcuts' },
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', tabindex: '-1', 'aria-label': 'Keyboard shortcuts' },
       h('h2', {}, 'Every action has a key'),
       h('p', { class: 'lede' },
         'The cockpit is an interface to terminals, so it is keyboard-first. esc stops a turn because that is what esc already does inside Claude Code — Fleet inherits those reflexes rather than inventing new ones. ⌘ is Ctrl on Windows.'),
@@ -1633,7 +1662,7 @@ function bulkOverlay() {
 
   return [
     h('div', { class: 'scrim', onclick: () => { state.bulk = null; closeOverlay(); }, 'aria-hidden': 'true' }),
-    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Message a group', style: 'width:560px' },
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', tabindex: '-1', 'aria-label': 'Message a group', style: 'width:560px' },
       h('h2', {}, `Message ${reachable.length} session${reachable.length === 1 ? '' : 's'}`),
       h('p', { class: 'lede' }, `Everything tagged ${b.tag}. The same message goes to each one, queued separately, so a failure on one does not take the rest with it.`),
 
@@ -1672,7 +1701,7 @@ function statsOverlay() {
 
   return [
     h('div', { class: 'scrim', onclick: () => { closeOverlay(); }, 'aria-hidden': 'true' }),
-    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Metrics', style: 'width:640px' },
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', tabindex: '-1', 'aria-label': 'Metrics', style: 'width:640px' },
       h('h2', {}, 'How long a session waits for you'),
       h('p', { class: 'lede' },
         'Fleet exists because a session sat blocked for eleven days and nobody noticed. That is a measurable claim, so it is measured rather than asserted — and shown as percentiles, because an average buries exactly the session worth seeing.'),
@@ -1742,7 +1771,7 @@ function lookOverlay() {
 
   return [
     h('div', { class: 'scrim', onclick: () => { closeOverlay(); }, 'aria-hidden': 'true' }),
-    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Appearance', style: 'width:820px' },
+    h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', tabindex: '-1', 'aria-label': 'Appearance', style: 'width:820px' },
       h('h2', {}, 'Make the terminal yours'),
       h('p', { class: 'lede' }, 'You will stare at this pane more than anything else. Everything changes the preview as you pick it.'),
 
@@ -1888,6 +1917,19 @@ function render() {
   const focused = document.activeElement;
   const focusId = focused && ['INPUT', 'TEXTAREA'].includes(focused.tagName) ? focused.id : null;
   const caret = focusId ? [focused.selectionStart, focused.selectionEnd] : null;
+  // Everything that is not a text field lost focus on every re-render, and
+  // this pane re-renders on every poll and every stream event. Measured: tab
+  // to a session in the rail, wait one 2.5s poll, and activeElement is `body`.
+  // Keyboard navigation was not merely awkward, it was impossible — you were
+  // returned to the top of the document every few seconds.
+  //
+  // Restored by position in the tab order rather than by id, because giving
+  // nineteen call sites a stable id is nineteen chances to forget one, and
+  // because an id built from a label that contains "idle 2d" stops being
+  // stable the moment the clock moves. If the list shifted under you, you land
+  // on a neighbour — which is what a person expects, and is what happens in
+  // any list you can navigate.
+  const focusStop = focused && focused !== document.body && !focusId ? tabStops().indexOf(focused) : -1;
 
   const s = current();
   const body = state.view === 'wall'
@@ -1907,6 +1949,11 @@ function render() {
 
   const overlay = { palette: paletteOverlay, keys: keysOverlay, look: lookOverlay, stats: statsOverlay, bulk: bulkOverlay }[state.overlay];
   app.replaceChildren(topBar(), body, ...(undoBar ? [undoBar] : []), ...(overlay ? overlay() : []));
+
+  if (focusStop >= 0 && document.activeElement === document.body) {
+    const stops = tabStops();
+    stops[Math.min(focusStop, stops.length - 1)]?.focus();
+  }
 
   if (focusId) {
     const restored = document.getElementById(focusId);
