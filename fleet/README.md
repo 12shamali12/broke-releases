@@ -30,7 +30,7 @@ comes from the terminal you are sitting at, and every one after it from
 something you have already decided to trust.
 
 ```
-npm test                        # 543 tests, no network, no CLI, no credentials
+npm test                        # 547 tests, no network, no CLI, no credentials
 npm run demo                    # watch the core run against fixtures
 node bin/fleetd.mjs --fixture   # the daemon + the app, on fixtures
 node bin/fleet.mjs reach        # how to open it from your phone
@@ -335,6 +335,36 @@ Until that is settled with a real laptop session, Fleet says what is missing (a
 cloud session id) and does not hand out an instruction nobody has verified. The
 refusal is unchanged and correct either way: a write to a session with no cloud
 id is refused rather than queued.
+
+### The door nobody has opened
+
+Looking for where a cloud id might live turned up something better. The CLI's
+own session registry — `~/.claude/sessions/<pid>.json`, the files behind
+`claude agents --json` — carries a field the JSON output does not:
+
+```
+messagingSocketPath: "/tmp/cc-socks/498.sock"
+peerProtocol:        1
+peerFeatures:        ["notify_idle"]
+```
+
+That socket exists and is a real Unix socket. One per session.
+
+If a message can be delivered over it, Fleet drives sessions on the machine it
+runs on with no cloud session id involved at all — which is the difference
+between a board you watch and a board you use, and would make the whole
+`--cloud` addressing problem irrelevant for a laptop.
+
+Nothing in this repository writes to it, and `bin/spike.mjs` reports it as
+unproven rather than claiming it. Two reasons, and the second is the real one:
+the protocol is undocumented, and the only socket on this machine belongs to
+the session doing the looking — probing it means injecting messages into your
+own conversation. That experiment wants a session you can afford to lose, on a
+laptop, which is not this.
+
+`src/local-sessions.js` reads the registry and tells a live socket from a stale
+entry, since the registry is written when a session starts and not necessarily
+cleaned up when it exits.
 
 `bin/spike.mjs` reports this as the number that decides what Fleet is on your
 machine — *"6 sessions · 5 running, 1 from transcripts · 1 can be messaged"* —

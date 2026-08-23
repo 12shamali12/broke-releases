@@ -23,6 +23,7 @@ import { CliAdapter } from '../src/adapters/cli.js';
 import { AgentAdapter } from '../src/adapters/agent.js';
 import { CredentialAdapter, findCredential, CREDENTIAL_CANDIDATES } from '../src/adapters/credential.js';
 import { LocalAdapter } from '../src/adapters/local.js';
+import { localSessions } from '../src/local-sessions.js';
 import { normalizeFleet } from '../src/model.js';
 import { diagnose } from '../src/doctor.js';
 
@@ -270,6 +271,34 @@ if (results.credential?.ok || results.agent?.ok || results.local?.ok) {
   } catch (err) {
     fail(`normalisation failed — ${err.message}`);
     results.shape = { ok: false, detail: err.message };
+  }
+}
+
+// -------------------------------------------------- a door nobody has opened
+head('Local messaging sockets');
+
+{
+  const sessions = await localSessions();
+  const live = sessions.filter((x) => x.socketExists);
+
+  if (!sessions.length) {
+    note('no session registry on this machine — nothing to report.');
+  } else if (!live.length) {
+    note(`${sessions.length} registry entr(ies), none with a live socket.`);
+    note('Stale entries: the registry is written on start, not cleaned on exit.');
+  } else {
+    warn(`${live.length} session(s) expose a messaging socket — UNPROVEN, and the most`);
+    note('promising unexplored path here. Every entry names a Unix socket, one per');
+    note('session, with a peer protocol version and a feature list:');
+    for (const x of live) {
+      note(`  ${x.sessionId.slice(0, 8)}… protocol ${x.peerProtocol ?? '?'} · ${x.peerFeatures.join(', ') || 'no features listed'}`);
+    }
+    note('If a message can be delivered over that, Fleet drives sessions on the');
+    note('machine it runs on, with no cloud session id involved at all — which is');
+    note('the difference between a board you watch and a board you use.');
+    note('Nothing here writes to it: the protocol is undocumented, and probing it');
+    note('means injecting into a live conversation. Try it on a session you can');
+    note('afford to lose, not on the one you are working in.');
   }
 }
 
